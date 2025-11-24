@@ -56,12 +56,12 @@ export default function EventsPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-semibold" data-testid="text-page-title">Events</h1>
-          <p className="text-muted-foreground mt-1">Manage all your scheduled activities</p>
+          <h1 className="text-3xl font-semibold" data-testid="text-page-title">Dogodki</h1>
+          <p className="text-muted-foreground mt-1">Upravljajte vse vaše načrtovane aktivnosti</p>
         </div>
         <Button onClick={() => setShowEventDialog(true)} data-testid="button-add-event">
           <Plus className="h-4 w-4 mr-2" />
-          Add Event
+          Dodaj dogodek
         </Button>
       </div>
 
@@ -69,7 +69,7 @@ export default function EventsPage() {
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Search events..."
+            placeholder="Išči dogodke..."
             className="pl-10"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -78,12 +78,12 @@ export default function EventsPage() {
         </div>
         <Select value={filterType} onValueChange={setFilterType}>
           <SelectTrigger className="w-full sm:w-[200px]" data-testid="select-filter-type">
-            <SelectValue placeholder="Filter by type" />
+            <SelectValue placeholder="Filtriraj po tipu" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Events</SelectItem>
-            <SelectItem value="study">Study Events</SelectItem>
-            <SelectItem value="personal">Personal Events</SelectItem>
+            <SelectItem value="all">Vsi dogodki</SelectItem>
+            <SelectItem value="učenje">Učni dogodki</SelectItem>
+            <SelectItem value="osebno">Osebni dogodki</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -91,11 +91,11 @@ export default function EventsPage() {
       <div className="space-y-4">
         {isLoading ? (
           <div className="text-center py-12">
-            <p className="text-muted-foreground">Loading events...</p>
+            <p className="text-muted-foreground">Nalaganje dogodkov...</p>
           </div>
         ) : filteredEvents.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-muted-foreground">No events found</p>
+            <p className="text-muted-foreground">Ni najdenih dogodkov</p>
           </div>
         ) : (
           filteredEvents.map((event) => (

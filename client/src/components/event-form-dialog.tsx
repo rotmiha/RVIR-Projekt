@@ -123,18 +123,18 @@ export function EventFormDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]" data-testid="dialog-event-form">
         <DialogHeader>
-          <DialogTitle>Add Event</DialogTitle>
+          <DialogTitle>Dodaj dogodek</DialogTitle>
           <DialogDescription>
-            Create a new event in your schedule. Study events take priority over personal events.
+            Ustvarite nov dogodek v vašem urniku. Učni dogodki imajo prednost pred osebnimi dogodki.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="title">Event Title</Label>
+              <Label htmlFor="title">Naslov dogodka</Label>
               <Input
                 id="title"
-                placeholder="e.g., Mathematics Lecture"
+                placeholder="npr., Predavanje TIDS"
                 value={formData.title}
                 onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                 required
@@ -143,7 +143,7 @@ export function EventFormDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="type">Event Type</Label>
+              <Label htmlFor="type">Tip dogodka</Label>
               <Select
                 value={formData.type}
                 onValueChange={(value: "study" | "personal") =>
@@ -154,15 +154,15 @@ export function EventFormDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="study">Study Event</SelectItem>
-                  <SelectItem value="personal">Personal Event</SelectItem>
+                  <SelectItem value="study">Učnenje</SelectItem>
+                  <SelectItem value="personal">Osebni</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="startDate">Start Date</Label>
+                <Label htmlFor="startDate">Datum začetka</Label>
                 <Input
                   id="startDate"
                   type="date"
@@ -173,7 +173,7 @@ export function EventFormDialog({
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="startTime">Start Time</Label>
+                <Label htmlFor="startTime">Čas začetka</Label>
                 <Input
                   id="startTime"
                   type="time"
@@ -187,7 +187,7 @@ export function EventFormDialog({
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="endDate">End Date</Label>
+                <Label htmlFor="endDate">Datum konca</Label>
                 <Input
                   id="endDate"
                   type="date"
@@ -198,7 +198,7 @@ export function EventFormDialog({
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="endTime">End Time</Label>
+                <Label htmlFor="endTime">Čas konca</Label>
                 <Input
                   id="endTime"
                   type="time"
@@ -211,10 +211,10 @@ export function EventFormDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="location">Location (Optional)</Label>
+              <Label htmlFor="location">Lokacija (Neobvezno)</Label>
               <Input
                 id="location"
-                placeholder="e.g., Room 101, Building A"
+                placeholder="npr., Soba 101, Stavba A"
                 value={formData.location}
                 onChange={(e) => setFormData({ ...formData, location: e.target.value })}
                 data-testid="input-event-location"
@@ -222,10 +222,10 @@ export function EventFormDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="description">Description (Optional)</Label>
+              <Label htmlFor="description">Opis (Neobvezno)</Label>
               <Textarea
                 id="description"
-                placeholder="Add any additional details..."
+                placeholder="Dodajte dodatne podrobnosti..."
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 rows={3}
@@ -236,10 +236,10 @@ export function EventFormDialog({
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-event">
-              Cancel
+              Prekliči
             </Button>
             <Button type="submit" disabled={createEventMutation.isPending} data-testid="button-save-event">
-              {createEventMutation.isPending ? "Saving..." : "Save Event"}
+              {createEventMutation.isPending ? "Shranjujem..." : "Shrani dogodek"}
             </Button>
           </DialogFooter>
         </form>

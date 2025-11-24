@@ -17,7 +17,7 @@ export default function CalendarPage() {
   const calendarEvents = events.map(event => ({
     id: event.id,
     title: event.title,
-    type: event.type as 'study' | 'personal',
+    type: event.type as 'učenje' | 'osebno',
     startTime: new Date(event.startTime),
     endTime: new Date(event.endTime),
     location: event.location || undefined,
@@ -27,18 +27,18 @@ export default function CalendarPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-semibold" data-testid="text-page-title">Weekly Calesssndar</h1>
-          <p className="text-muted-foreground mt-1">Your complete schedule at a glance</p>
+          <h1 className="text-3xl font-semibold" data-testid="text-page-title">Tedenski kolendar</h1>
+          <p className="text-muted-foreground mt-1">Vaš celoten urnik na enem mestu</p>
         </div>
         <Button onClick={() => setShowEventDialog(true)} data-testid="button-add-event">
           <Plus className="h-4 w-4 mr-2" />
-          Add Event
+          Dodaj dogodek
         </Button>
       </div>
 
       {isLoading ? (
         <div className="text-center py-12">
-          <p className="text-muted-foreground">Loading calendar...</p>
+          <p className="text-muted-foreground">Nalaganje koledarja...</p>
         </div>
       ) : (
         <WeekCalendar

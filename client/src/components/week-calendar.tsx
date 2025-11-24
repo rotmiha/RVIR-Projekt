@@ -8,7 +8,7 @@ import { useState } from "react";
 interface CalendarEvent {
   id: string;
   title: string;
-  type: "study" | "personal";
+  type: "učenje" | "osebno";
   startTime: Date;
   endTime: Date;
   location?: string;
@@ -20,7 +20,7 @@ interface WeekCalendarProps {
 }
 
 const HOURS = Array.from({ length: 14 }, (_, i) => i + 7);
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAYS = ["Pon", "Tor", "Sre", "Čet", "Pet", "Sob", "Ned"];
 
 export function WeekCalendar({ events, onEventClick }: WeekCalendarProps) {
   const [currentWeek, setCurrentWeek] = useState(new Date());
@@ -44,7 +44,7 @@ export function WeekCalendar({ events, onEventClick }: WeekCalendarProps) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-        <CardTitle>Weekly Schedule</CardTitle>
+        <CardTitle>Tedenski urnik</CardTitle>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
@@ -71,7 +71,7 @@ export function WeekCalendar({ events, onEventClick }: WeekCalendarProps) {
         <div className="overflow-x-auto">
           <div className="min-w-[800px]">
             <div className="grid grid-cols-8 border-b border-border">
-              <div className="p-2 text-xs font-medium text-muted-foreground">Time</div>
+              <div className="p-2 text-xs font-medium text-muted-foreground">Čas</div>
               {DAYS.map((day, index) => {
                 const date = addDays(weekStart, index);
                 return (
@@ -114,7 +114,7 @@ export function WeekCalendar({ events, onEventClick }: WeekCalendarProps) {
                             data-testid={`calendar-event-${event.id}`}
                           >
                             <Badge
-                              variant={event.type === "study" ? "default" : "secondary"}
+                              variant={event.type === "učenje" ? "default" : "secondary"}
                               className="text-[10px] px-1 py-0 h-auto mb-0.5"
                             >
                               {event.type}

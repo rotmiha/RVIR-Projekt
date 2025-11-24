@@ -15,16 +15,16 @@ export default function ConflictsPage() {
   return (
     <div className="p-6 space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold" data-testid="text-page-title">Scheduling Conflicts</h1>
+        <h1 className="text-3xl font-semibold" data-testid="text-page-title">Konflikti</h1>
         <p className="text-muted-foreground mt-1">
-          Resolve overlapping events (Study events always take priority)
+          Odpravite prekrivajoče se dogodke (učni dogodki imajo vedno prednost)
         </p>
       </div>
 
       {isLoading ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
-            <p className="text-sm text-muted-foreground">Loading conflicts...</p>
+            <p className="text-sm text-muted-foreground">Nalaganje konfliktov...</p>
           </CardContent>
         </Card>
       ) : conflicts.length === 0 ? (
@@ -33,9 +33,9 @@ export default function ConflictsPage() {
             <div className="rounded-full bg-accent p-3 mb-4">
               <AlertTriangle className="h-6 w-6 text-muted-foreground" />
             </div>
-            <h3 className="text-lg font-medium mb-2">No Conflicts Found</h3>
+            <h3 className="text-lg font-medium mb-2">Brez konfliktov</h3>
             <p className="text-sm text-muted-foreground text-center max-w-md">
-              Your schedule is conflict-free. All events are properly scheduled without overlaps.
+              Vaš urnik je brez konfliktov. Vsi dogodki so pravilno razporejeni brez prekrivanj.
             </p>
           </CardContent>
         </Card>
@@ -46,7 +46,7 @@ export default function ConflictsPage() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-destructive">
                   <AlertTriangle className="h-5 w-5" />
-                  Conflict Detected
+                  Konflikt zaznan
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -110,7 +110,7 @@ export default function ConflictsPage() {
 
                 <div className="rounded-lg bg-accent p-4">
                   <p className="text-sm">
-                    <span className="font-medium">Resolution: </span>
+                    <span className="font-medium">Rešitev: </span>
                     {conflict.resolution}
                   </p>
                 </div>
@@ -121,14 +121,14 @@ export default function ConflictsPage() {
                     onClick={() => console.log("Edit event 1")}
                     data-testid={`button-edit-event1-${conflict.id}`}
                   >
-                    Edit {conflict.event1.title}
+                    Uredi {conflict.event1.title}
                   </Button>
                   <Button
                     variant="outline"
                     onClick={() => console.log("Edit event 2")}
                     data-testid={`button-edit-event2-${conflict.id}`}
                   >
-                    Edit {conflict.event2.title}
+                    Uredi {conflict.event2.title}
                   </Button>
                 </div>
               </CardContent>
