@@ -16,6 +16,11 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false }));
 
+app.use((req, _res, next) => {
+  console.log("INCOMING:", req.method, req.url);
+  next();
+});
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;

@@ -66,40 +66,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Create a new event
-  app.post("/api/events", async (req, res) => {
-    try {
-      const startTime = new Date(req.body.startTime);
-      const endTime = new Date(req.body.endTime);
+ app.post("/api/events", async (req, res) => {
+  try {
+    console.log("POST /api/events - body:", req.body);
 
-      // Validate dates
-      if (isNaN(startTime.getTime())) {
-        return res.status(400).json({ error: "Invalid startTime format" });
-      }
-      if (isNaN(endTime.getTime())) {
-        return res.status(400).json({ error: "Invalid endTime format" });
-      }
-      if (startTime >= endTime) {
-        return res.status(400).json({ error: "Event end time must be after start time" });
-      }
+    const startTime = new Date(req.body.startTime);
+    const endTime = new Date(req.body.endTime);
 
-      const validatedData = insertEventSchema.parse({
-        ...req.body,
-        userId: "default-user-id",
-        startTime,
-        endTime,
-      });
-
-      const event = await storage.createEvent(validatedData);
-      res.status(201).json(event);
-    } catch (error: any) {
-      console.error("Error creating event:", error);
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ error: "Invalid event data", details: error.errors });
-      }
-      res.status(500).json({ error: "Failed to create event" });
+    if (isNaN(startTime.getTime())) {
+      return res.status(400).json({ error: "Invalid startTime format" });
     }
-  });
+    if (isNaN(endTime.getTime())) {
+      return res.status(400).json({ error: "Invalid endTime format" });
+    }
+    if (startTime >= endTime) {
+      return res.status(400).json({ error: "Event end time must be after start time" });
+    }
+
+    console.log("POST /api/events - dates OK");
+
+    const validatedData = insertEventSchema.parse({
+      ...req.body,
+      userId: "default-user-id",
+      startTime,
+      endTime,
+    });
+
+    console.log("POST /api/events - zod OK, calling storage.createEvent...");
+
+    const event = await storage.createEvent(validatedData);
+
+    console.log("POST /api/events - storage.createEvent DONE");
+
+    return res.status(201).json(event);
+  } catch (error: any) {
+    console.error("Error creating event:", error);
+    if (error.name === "ZodError") {
+      return res.status(400).json({ error: "Invalid event data", details: error.errors });
+    }
+    return res.status(500).json({ error: "Failed to create event" });
+  }
+});
+
 
   // Update an event
   app.put("/api/events/:id", async (req, res) => {
