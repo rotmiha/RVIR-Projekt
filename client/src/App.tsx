@@ -22,7 +22,6 @@ function Router() {
       <Route path="/calendar" component={CalendarPage} />
       <Route path="/events" component={EventsPage} />
       <Route path="/conflicts" component={ConflictsPage} />
-      <Route path="/import" component={ImportPage} />
       <Route path="/settings" component={SettingsPage} />
       <Route component={NotFound} />
     </Switch>

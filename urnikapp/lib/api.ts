@@ -6,21 +6,18 @@ function getDevHost() {
     Constants.expoConfig?.hostUri ??
     (Constants as any).expoConfig?.hostUri;
 
-  // npr. "192.168.1.25:8081"
   return hostUri?.split(":")[0];
 }
 
-// ✅ tvoj backend teče na 5000
 const DEV_PORT = 5000;
 
-// ✅ Android emulator -> PC localhost
-// ✅ iOS simulator / Expo Go -> host iz Expo dev serverja (tvoj LAN IP)
 const HOST =
   Platform.OS === "android"
     ? "10.0.2.2"
     : getDevHost() || "localhost";
 
-export const BASE_URL = "http://164.8.207.1:5000";
+// ⚠️ priporočilo: uporabi HOST + port
+export const BASE_URL = `http://192.168.0.102:5000`;
 
 async function request<T>(
   path: string,
@@ -41,7 +38,6 @@ async function request<T>(
     });
 
     const text = await res.text();
-    console.log("STATUS:", res.status);
 
     if (!res.ok) {
       throw new Error(text || `HTTP ${res.status}`);
@@ -53,11 +49,26 @@ async function request<T>(
   }
 }
 
+// ✅ VSE API FUNKCIJE NA ENEM MESTU
 export const api = {
-  getEvents: () => request<any[]>("/api/events"),
-  getConflicts: () => request<any[]>("/api/conflicts"),
+  // events
+  getEvents: () =>
+    request<{ events: any[] }>("/api/events").then((r) => r.events),
+
+  getEventsForUser: (userId: string) =>
+    request<{ events: any[] }>(
+      `/api/events?userId=${encodeURIComponent(userId)}`
+    ).then((r) => r.events),
+
   createEvent: (data: any) =>
-    request("/api/events", { method: "POST", body: JSON.stringify(data) }),
+    request("/api/events", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
   deleteEvent: (id: string) =>
     request(`/api/events/${id}`, { method: "DELETE" }),
+
+  getConflicts: () =>
+    request<any[]>("/api/conflicts"),
 };

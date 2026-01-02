@@ -17,9 +17,8 @@ import { ConflictAlert } from "@/components/conflict-alert";
 import { StatCard } from "@/components/stat-card";
 import { EventCard } from "../../components/event-card";
 import { EventFormDialog } from "@/components/event-form-dialog";
-
-// Če imaš svoj toast hook v Expo, ga lahko vključiš nazaj.
-// import { useToast } from "@/hooks/use-toast";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAuth } from "@/components/AuthProvider";
 
 type EventType = "study" | "personal";
 
@@ -34,34 +33,41 @@ type EventDto = {
 
 export default function DashboardScreen() {
   const router = useRouter();
+  const { user } = useAuth();
+  const userId = user?.id;
+
   const [showEventDialog, setShowEventDialog] = useState(false);
-  // const { toast } = useToast();
+  const insets = useSafeAreaInsets();
 
-  const { data: allEvents = [], isLoading: eventsLoading } = useQuery<EventDto[]>({
-    queryKey: ["/api/events"],
-    queryFn: () => api.getEvents(),
+  const TAB_HEIGHT = 62;
+  const GAP = 8;
+  const topPad = insets.top + GAP + TAB_HEIGHT + 12;
+
+  // 🔹 EVENTS – samo za prijavljenega userja
+  const {
+    data: allEvents = [],
+    isLoading: eventsLoading,
+  } = useQuery<EventDto[]>({
+    queryKey: ["/api/events", userId],
+    enabled: !!userId,
+    queryFn: () => api.getEventsForUser(userId as string),
   });
 
-  const { data: conflicts = [] } = useQuery<any[]>({
-    queryKey: ["/api/conflicts"],
-    queryFn: () => api.getConflicts(),
-  });
 
+  // 🔹 DELETE EVENT
   const deleteEventMutation = useMutation({
     mutationFn: (id: string) => api.deleteEvent(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/events"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/conflicts"] });
-
-      // toast?.({ title: "Event Deleted", description: "The event has been removed." });
+      queryClient.invalidateQueries({ queryKey: ["/api/events", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/conflicts", userId] });
       console.log("Event deleted");
     },
     onError: () => {
-      // toast?.({ title: "Error", description: "Failed to delete event.", variant: "destructive" });
       console.log("Delete failed");
     },
   });
 
+  // 🔹 STATS
   const { thisWeekEventsCount, totalStudyHours, upcomingEvents } = useMemo(() => {
     const now = new Date();
 
@@ -76,14 +82,19 @@ export default function DashboardScreen() {
     const studyEvents = allEvents.filter((e) => e.type === "study");
     const hours = studyEvents.reduce((acc, event) => {
       const duration =
-        (new Date(event.endTime).getTime() - new Date(event.startTime).getTime()) /
+        (new Date(event.endTime).getTime() -
+          new Date(event.startTime).getTime()) /
         (1000 * 60 * 60);
       return acc + duration;
     }, 0);
 
     const upcoming = allEvents
       .filter((event) => new Date(event.startTime) > now)
-      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+      .sort(
+        (a, b) =>
+          new Date(a.startTime).getTime() -
+          new Date(b.startTime).getTime()
+      )
       .slice(0, 3);
 
     return {
@@ -94,61 +105,71 @@ export default function DashboardScreen() {
   }, [allEvents]);
 
   return (
-    <ScrollView style={styles.bg} contentContainerStyle={styles.container}>
+    <ScrollView
+      style={styles.bg}
+      contentContainerStyle={[styles.container, { paddingTop: topPad }]}
+    >
       <View style={styles.headerRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Domov</Text>
-          <Text style={styles.subtitle}>Pregled nad urnikom in aktivnostmi</Text>
+          <Text style={styles.subtitle}>
+            Pregled nad urnikom in aktivnostmi
+          </Text>
         </View>
 
         <Pressable
           onPress={() => setShowEventDialog(true)}
-          style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
-          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.primaryBtn,
+            pressed && styles.pressed,
+          ]}
         >
           <Text style={styles.primaryBtnText}>+ Dodaj aktivnost</Text>
         </Pressable>
       </View>
 
-      {conflicts.length > 0 && (
-        <ConflictAlert
-          count={conflicts.length}
-          onView={() => router.push("/(tabs)/dashboard")}
-        />
-      )}
+    
 
       <View style={styles.statsGrid}>
         <View style={styles.statCell}>
-          <StatCard title="Vse aktivnosti" value={allEvents.length} icon={"calendar"} description="je/so zapisane" />
+          <StatCard
+            title="Vse aktivnosti"
+            value={allEvents.length}
+            icon={"calendar"}
+            description="je/so zapisane"
+          />
         </View>
+
         <View style={styles.statCell}>
           <StatCard
-            title="Študijski ur"
+            title="Študijskih ur"
             value={totalStudyHours.toFixed(1)}
             icon={"clock"}
             description="je/so zapisane"
           />
         </View>
+
+        
         <View style={styles.statCell}>
           <StatCard
-            title="Konflikti"
-            value={conflicts.length}
-            icon={"alert-octagon"}
-            description={conflicts.length > 0 ? "Potrebna " : "Brez problemov"}
+            title="Ta teden"
+            value={thisWeekEventsCount}
+            icon={"users"}
+            description="aktivnosti"
           />
-        </View>
-        <View style={styles.statCell}>
-          <StatCard title="Ta teden" value={thisWeekEventsCount} icon={"users"} description="Aktivnosti zabeleženih" />
         </View>
       </View>
 
-      {/* Upcoming events card */}
+      {/* UPCOMING */}
       <View style={styles.card}>
         <View style={styles.cardHeaderRow}>
           <Text style={styles.cardTitle}>Prihajajoči dogodki</Text>
           <Pressable
             onPress={() => router.push("/(tabs)/events")}
-            style={({ pressed }) => [styles.ghostBtn, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.ghostBtn,
+              pressed && styles.pressed,
+            ]}
           >
             <Text style={styles.ghostBtnText}>Pregled vseh</Text>
           </Pressable>
@@ -175,7 +196,9 @@ export default function DashboardScreen() {
                   endTime={new Date(event.endTime)}
                   location={event.location || undefined}
                   onEdit={(id) => console.log("Edit:", id)}
-                  onDelete={(id: string) => deleteEventMutation.mutate(id)}
+                  onDelete={(id: string) =>
+                    deleteEventMutation.mutate(id)
+                  }
                 />
               </View>
             ))
@@ -183,30 +206,39 @@ export default function DashboardScreen() {
         </View>
       </View>
 
-      {/* Quick actions card */}
+      {/* QUICK ACTIONS */}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Hitre akcije</Text>
 
         <View style={{ marginTop: 10, gap: 10 }}>
           <Pressable
-            style={({ pressed }) => [styles.outlineBtn, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.outlineBtn,
+              pressed && styles.pressed,
+            ]}
             onPress={() => router.push("/(tabs)/import")}
           >
             <Text style={styles.outlineBtnText}>Uvozi urnik</Text>
           </Pressable>
 
           <Pressable
-            style={({ pressed }) => [styles.outlineBtn, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.outlineBtn,
+              pressed && styles.pressed,
+            ]}
             onPress={() => router.push("/(tabs)/calendar")}
           >
-            <Text style={styles.outlineBtnText}>View Weekly Calendar</Text>
+            <Text style={styles.outlineBtnText}>Tedenski koledar</Text>
           </Pressable>
 
           <Pressable
-            style={({ pressed }) => [styles.outlineBtn, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.outlineBtn,
+              pressed && styles.pressed,
+            ]}
             onPress={() => router.push("/(tabs)/settings")}
           >
-            <Text style={styles.outlineBtnText}>Configure Notifications</Text>
+            <Text style={styles.outlineBtnText}>Nastavitve</Text>
           </Pressable>
         </View>
       </View>
@@ -214,8 +246,6 @@ export default function DashboardScreen() {
       <EventFormDialog
         open={showEventDialog}
         onOpenChange={setShowEventDialog}
-        // če ima tvoj RN dialog submit handler:
-        // onSubmit={(payload) => console.log("New event", payload)}
       />
     </ScrollView>
   );
@@ -255,7 +285,11 @@ const styles = StyleSheet.create({
     padding: 14,
     backgroundColor: "#fff",
   },
-  cardHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  cardHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   cardTitle: { fontSize: 16, fontWeight: "800", color: "#0f172a" },
 
   ghostBtn: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10 },

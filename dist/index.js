@@ -394,15 +394,18 @@ async function registerRoutes(app2) {
   app2.get("/api/health", (_req, res) => {
     res.json({ status: "ok", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
   });
-  app2.get("/api/events", async (_req, res) => {
+  const getEventsForUser = async (req, res) => {
     try {
-      const events2 = await storage.getEventsByUserId("default-user-id");
-      res.json(events2);
-    } catch (error) {
-      console.error("Error fetching events:", error);
-      res.status(500).json({ error: "Failed to fetch events" });
+      const userId = String(req.query.userId ?? "");
+      if (!userId) return res.status(400).json({ message: "Missing userId" });
+      const events2 = await storage.getEventsByUserId(userId);
+      return res.json({ events: events2 });
+    } catch (e) {
+      console.error("GET /api/events error:", e);
+      return res.status(500).json({ message: e?.message ?? String(e) });
     }
-  });
+  };
+  app2.get("/api/events", getEventsForUser);
   app2.get("/api/events/range", async (req, res) => {
     try {
       const { startDate, endDate } = req.query;
@@ -437,33 +440,88 @@ async function registerRoutes(app2) {
       res.status(500).json({ error: "Failed to fetch event" });
     }
   });
-  app2.post("/api/events", async (req, res) => {
-    try {
-      const startTime = new Date(req.body.startTime);
-      const endTime = new Date(req.body.endTime);
-      if (isNaN(startTime.getTime())) {
-        return res.status(400).json({ error: "Invalid startTime format" });
+  async function parseIcsToEvents2(icsText) {
+    const ical = await import("node-ical");
+    const parsed = ical.parseICS(icsText);
+    const events2 = [];
+    for (const k in parsed) {
+      const ev = parsed[k];
+      if (ev?.type === "VEVENT") {
+        events2.push({
+          title: ev.summary || "Untitled Event",
+          startTime: ev.start,
+          endTime: ev.end,
+          location: ev.location || null,
+          description: ev.description || null
+        });
       }
-      if (isNaN(endTime.getTime())) {
-        return res.status(400).json({ error: "Invalid endTime format" });
-      }
-      if (startTime >= endTime) {
-        return res.status(400).json({ error: "Event end time must be after start time" });
-      }
-      const validatedData = insertEventSchema.parse({
-        ...req.body,
-        userId: "default-user-id",
-        startTime,
-        endTime
+    }
+    return events2;
+  }
+  async function deleteWiseImportedEvents2(userId) {
+    const all = await storage.getEventsByUserId(userId);
+    const wiseOnes = all.filter((e) => e.source === "wise");
+    await Promise.all(wiseOnes.map((e) => storage.deleteEvent(e.id)));
+  }
+  app2.post("/api/import/wise", async (req, res) => {
+    console.log("\u2705 HIT /api/import/wise", req.body);
+    const { programValue, yearValue } = req.body ?? {};
+    const userId = "default-user-id";
+    if (!programValue || !yearValue) {
+      return res.status(400).json({
+        message: "Missing programValue / yearValue"
       });
-      const event = await storage.createEvent(validatedData);
-      res.status(201).json(event);
-    } catch (error) {
-      console.error("Error creating event:", error);
-      if (error.name === "ZodError") {
-        return res.status(400).json({ error: "Invalid event data", details: error.errors });
+    }
+    const { chromium: chromium2 } = await import("playwright");
+    const browser = await chromium2.launch({ headless: true });
+    const context = await browser.newContext({ acceptDownloads: true });
+    const page = await context.newPage();
+    try {
+      await page.goto("https://wise-tt.com/wtt_um_feri/index.jsp", {
+        waitUntil: "domcontentloaded",
+        timeout: 6e4
+      });
+      await page.selectOption('select[id="form:j_idt175_input"]', String(programValue));
+      await page.waitForLoadState("networkidle");
+      await page.selectOption('select[id="form:j_idt179_input"]', String(yearValue));
+      await page.waitForLoadState("networkidle");
+      const [download] = await Promise.all([
+        page.waitForEvent("download"),
+        page.locator('button:has-text("iCal-vse")').first().click()
+      ]);
+      const path2 = await download.path();
+      if (!path2) throw new Error("No download path");
+      const fs = await import("node:fs/promises");
+      const icsText = await fs.readFile(path2, "utf8");
+      const parsedEvents = await parseIcsToEvents2(icsText);
+      await deleteWiseImportedEvents2(userId);
+      const importedEvents = [];
+      for (const ev of parsedEvents) {
+        const validatedData = insertEventSchema.parse({
+          userId,
+          title: ev.title,
+          type: "study",
+          // ali mapiraj po potrebi
+          startTime: new Date(ev.startTime),
+          endTime: new Date(ev.endTime),
+          location: ev.location,
+          description: ev.description,
+          source: "wise"
+        });
+        const created = await storage.createEvent(validatedData);
+        importedEvents.push(created);
       }
-      res.status(500).json({ error: "Failed to create event" });
+      res.setHeader("X-WISE-ICAL", "1");
+      return res.json({
+        success: true,
+        imported: importedEvents.length
+      });
+    } catch (e) {
+      console.error("\u274C WISE IMPORT ERROR:", e);
+      return res.status(500).json({ message: e?.message ?? String(e) });
+    } finally {
+      await context.close();
+      await browser.close();
     }
   });
   app2.put("/api/events/:id", async (req, res) => {
@@ -711,8 +769,6 @@ async function registerRoutes(app2) {
 
 // server/vite.ts
 import express from "express";
-import fs from "fs";
-import path2 from "path";
 import { createServer as createViteServer, createLogger } from "vite";
 
 // vite.config.ts
@@ -765,72 +821,223 @@ function log(message, source = "express") {
   });
   console.log(`${formattedTime} [${source}] ${message}`);
 }
-async function setupVite(app2, server) {
-  const serverOptions = {
-    middlewareMode: true,
-    hmr: { server },
-    allowedHosts: true
-  };
-  const vite = await createViteServer({
-    ...vite_config_default,
-    configFile: false,
-    customLogger: {
-      ...viteLogger,
-      error: (msg, options) => {
-        viteLogger.error(msg, options);
-        process.exit(1);
-      }
-    },
-    server: serverOptions,
-    appType: "custom"
-  });
-  app2.use(vite.middlewares);
-  app2.use("*", async (req, res, next) => {
-    const url = req.originalUrl;
-    try {
-      const clientTemplate = path2.resolve(
-        import.meta.dirname,
-        "..",
-        "client",
-        "index.html"
-      );
-      let template = await fs.promises.readFile(clientTemplate, "utf-8");
-      template = template.replace(
-        `src="/src/main.tsx"`,
-        `src="/src/main.tsx?v=${nanoid()}"`
-      );
-      const page = await vite.transformIndexHtml(url, template);
-      res.status(200).set({ "Content-Type": "text/html" }).end(page);
-    } catch (e) {
-      vite.ssrFixStacktrace(e);
-      next(e);
-    }
-  });
-}
-function serveStatic(app2) {
-  const distPath = path2.resolve(import.meta.dirname, "public");
-  if (!fs.existsSync(distPath)) {
-    throw new Error(
-      `Could not find the build directory: ${distPath}, make sure to build the client first`
-    );
-  }
-  app2.use(express.static(distPath));
-  app2.use("*", (_req, res) => {
-    res.sendFile(path2.resolve(distPath, "index.html"));
-  });
-}
 
 // server/index.ts
+import { chromium } from "playwright";
 var app = express2();
-app.use(express2.json({
-  verify: (req, _res, buf) => {
-    req.rawBody = buf;
-  }
-}));
+app.use(
+  express2.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    }
+  })
+);
 app.use(express2.urlencoded({ extended: false }));
+app.use((req, _res, next) => {
+  console.log("INCOMING:", req.method, req.url);
+  next();
+});
+async function parseIcsToEvents(icsText) {
+  const mod = await import("node-ical");
+  const ical = mod?.default ?? mod;
+  const parsed = ical.parseICS(icsText);
+  const events2 = [];
+  for (const k in parsed) {
+    const ev = parsed[k];
+    if (ev?.type === "VEVENT") {
+      events2.push({
+        title: ev.summary || "Untitled Event",
+        startTime: ev.start,
+        endTime: ev.end,
+        location: ev.location || null,
+        description: ev.description || null
+      });
+    }
+  }
+  return events2;
+}
+async function deleteWiseImportedEvents(userId) {
+  const all = await storage.getEventsByUserId(userId);
+  const wiseOnes = all.filter((e) => e.source === "wise");
+  await Promise.all(wiseOnes.map((e) => storage.deleteEvent(e.id)));
+}
+app.get("/api/ping", (_req, res) => {
+  console.log("PING HIT /api/ping");
+  res.json({ ok: true });
+});
+app.post("/api/import/wise", async (req, res) => {
+  console.log("\u2705 HIT /api/import/wise", req.body);
+  const { userId, programValue, yearValue } = req.body ?? {};
+  if (!userId || !programValue || !yearValue) {
+    return res.status(400).json({
+      message: "Missing userId / programValue / yearValue"
+    });
+  }
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ acceptDownloads: true });
+  const page = await context.newPage();
+  const lastReq = [];
+  const lastResp = [];
+  page.on(
+    "console",
+    (msg) => console.log("\u{1F7E1} PAGE console:", msg.type(), msg.text())
+  );
+  page.on("pageerror", (err) => console.log("\u{1F534} PAGE error:", err.message));
+  page.on("request", (r) => {
+    const entry = { method: r.method(), url: r.url() };
+    lastReq.push(entry);
+    if (lastReq.length > 50) lastReq.shift();
+    console.log("\u27A1\uFE0F REQ:", entry.method, entry.url);
+  });
+  page.on("response", (r) => {
+    const h = r.headers();
+    const entry = {
+      status: r.status(),
+      url: r.url(),
+      ct: h["content-type"],
+      cd: h["content-disposition"]
+    };
+    lastResp.push(entry);
+    if (lastResp.length > 50) lastResp.shift();
+    const ct = (entry.ct ?? "").toLowerCase();
+    const cd = (entry.cd ?? "").toLowerCase();
+    const url = entry.url.toLowerCase();
+    if (ct.includes("calendar") || cd.includes("attachment") || cd.includes(".ics") || url.includes("dynamiccontent") || url.includes("ical")) {
+      console.log(
+        "\u2B05\uFE0F RESP IMPORTANT:",
+        entry.status,
+        entry.url,
+        "CT=",
+        entry.ct,
+        "CD=",
+        entry.cd
+      );
+    }
+  });
+  page.on(
+    "requestfailed",
+    (r) => console.log("\u274C REQ FAILED:", r.url(), r.failure()?.errorText)
+  );
+  try {
+    console.log("\u{1F30D} goto WISE");
+    await page.goto("https://wise-tt.com/wtt_um_feri/index.jsp", {
+      waitUntil: "domcontentloaded",
+      timeout: 6e4
+    });
+    console.log("\u2705 page loaded");
+    console.log("\u{1F393} selecting program", programValue);
+    const programSel = page.locator('select[id="form:j_idt175_input"]');
+    await programSel.waitFor({ state: "visible", timeout: 3e4 });
+    await programSel.selectOption(String(programValue));
+    await programSel.dispatchEvent("change");
+    await page.waitForTimeout(700);
+    console.log("\u{1F4C5} selecting year", yearValue);
+    const yearSel = page.locator('select[id="form:j_idt179_input"]');
+    await yearSel.waitFor({ state: "visible", timeout: 3e4 });
+    await yearSel.selectOption(String(yearValue));
+    await yearSel.dispatchEvent("change");
+    await page.waitForTimeout(700);
+    const btn = page.locator('button:has-text("iCal-vse")').first();
+    console.log("\u{1F518} waiting for iCal button");
+    await btn.waitFor({ state: "visible", timeout: 3e4 });
+    console.log("\u{1F5B1}\uFE0F clicking iCal-vse");
+    const downloadP = page.waitForEvent("download", { timeout: 9e4 }).catch(() => null);
+    const attachRespP = page.waitForResponse(
+      (r) => {
+        const h = r.headers();
+        const ct = (h["content-type"] ?? "").toLowerCase();
+        const cd = (h["content-disposition"] ?? "").toLowerCase();
+        const url = r.url().toLowerCase();
+        return ct.includes("calendar") || cd.includes("attachment") || cd.includes(".ics") || url.includes("ical");
+      },
+      { timeout: 9e4 }
+    ).catch(() => null);
+    const ajaxHomeP = page.waitForResponse(
+      (r) => r.url().includes("/pages/home.jsf") && r.request().method() === "POST",
+      { timeout: 3e4 }
+    ).catch(() => null);
+    await btn.click();
+    console.log("\u23F3 waiting for download/attachment/ajax...");
+    const download = await downloadP;
+    const attachResp = await attachRespP;
+    let icsText = null;
+    if (download) {
+      console.log("\u2705 GOT DOWNLOAD EVENT:", await download.suggestedFilename());
+      const path2 = await download.path();
+      if (!path2) throw new Error("Download had no path");
+      const fs = await import("node:fs/promises");
+      icsText = await fs.readFile(path2, "utf8");
+    }
+    if (!icsText && attachResp) {
+      console.log(
+        "\u2705 GOT ATTACHMENT RESPONSE:",
+        attachResp.status(),
+        attachResp.url()
+      );
+      icsText = await attachResp.text();
+    }
+    if (!icsText) {
+      const ajaxResp = await ajaxHomeP;
+      if (ajaxResp) {
+        const ajaxText = await ajaxResp.text();
+        console.log("\u{1F9E9} AJAX home.jsf preview:", ajaxText.slice(0, 500));
+        const m = ajaxText.match(
+          /(\/wtt_um_feri\/javax\.faces\.resource\/dynamiccontent\.xhtml[^"'<>\s]+)/i
+        ) || ajaxText.match(
+          /(\/javax\.faces\.resource\/dynamiccontent\.xhtml[^"'<>\s]+)/i
+        );
+        if (m?.[1]) {
+          const dynUrl = new URL(m[1], "https://wise-tt.com").toString();
+          console.log("\u{1F3AF} FOUND dynamiccontent:", dynUrl);
+          const r = await context.request.get(dynUrl);
+          const t = await r.text();
+          console.log("\u{1F4C4} dynamiccontent CT:", r.headers()["content-type"]);
+          console.log("\u{1F4C4} dynamiccontent preview:", t.slice(0, 200));
+          icsText = t;
+        } else {
+          console.log("\u2757 No dynamiccontent link found in AJAX response.");
+        }
+      } else {
+        console.log("\u2757 No AJAX /pages/home.jsf response captured (timeout).");
+      }
+    }
+    if (!icsText) {
+      console.log("\u{1F9EF} LAST 20 REQ:", lastReq.slice(-20));
+      console.log("\u{1F9EF} LAST 20 RESP:", lastResp.slice(-20));
+      throw new Error(
+        "No ICS detected (no download event, no attachment response, no dynamiccontent)."
+      );
+    }
+    console.log("\u{1F4C4} ICS length:", icsText.length);
+    console.log("\u{1F4C4} ICS preview:", icsText.slice(0, 250));
+    if (!icsText.includes("BEGIN:VCALENDAR")) {
+      console.log("\u{1F4C4} NOT ICS START:", icsText.slice(0, 300));
+      throw new Error("Received content but it's not ICS (missing BEGIN:VCALENDAR)");
+    }
+    const parsedEvents = await parseIcsToEvents(icsText);
+    console.log("\u{1F4CA} parsed events:", parsedEvents.length);
+    await deleteWiseImportedEvents(userId);
+    await insertImportedEvents(userId, parsedEvents);
+    const all = await storage.getEventsByUserId(userId);
+    const wiseEvents = all.filter((e) => e.source === "wise" || e.source === "imported");
+    res.setHeader("X-WISE-ICAL", "1");
+    return res.json({
+      imported: parsedEvents.length,
+      events: wiseEvents
+    });
+  } catch (e) {
+    console.error("\u274C WISE IMPORT ERROR:", e);
+    return res.status(500).json({
+      message: e?.message ?? String(e)
+    });
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+});
 app.use((req, res, next) => {
   const start = Date.now();
-  const path3 = req.path;
+  const path2 = req.path;
   let capturedJsonResponse = void 0;
   const originalResJson = res.json;
   res.json = function(bodyJson, ...args) {
@@ -839,14 +1046,12 @@ app.use((req, res, next) => {
   };
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path3.startsWith("/api")) {
-      let logLine = `${req.method} ${path3} ${res.statusCode} in ${duration}ms`;
+    if (path2.startsWith("/api")) {
+      let logLine = `${req.method} ${path2} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "\u2026";
-      }
+      if (logLine.length > 80) logLine = logLine.slice(0, 79) + "\u2026";
       log(logLine);
     }
   });
@@ -858,19 +1063,36 @@ app.use((req, res, next) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
     res.status(status).json({ message });
-    throw err;
   });
-  if (app.get("env") === "development") {
-    await setupVite(app, server);
-  } else {
-    serveStatic(app);
-  }
+  app.use((req, res) => {
+    if (req.path.startsWith("/api")) {
+      return res.status(404).json({ message: "API route not found" });
+    }
+    return res.status(404).json({ message: "Frontend disabled (API only)" });
+  });
   const port = parseInt(process.env.PORT || "5000", 10);
-  server.listen({
-    port,
-    host: "0.0.0.0",
-    reusePort: true
-  }, () => {
-    log(`serving on port ${port}`);
-  });
+  server.listen(
+    {
+      port,
+      host: "0.0.0.0",
+      reusePort: true
+    },
+    () => {
+      log(`serving on port ${port}`);
+    }
+  );
 })();
+async function insertImportedEvents(userId, parsedEvents) {
+  for (const ev of parsedEvents) {
+    await storage.createEvent({
+      userId,
+      title: ev.title,
+      type: "study",
+      startTime: new Date(ev.startTime),
+      endTime: new Date(ev.endTime),
+      location: ev.location ?? null,
+      description: ev.description ?? null,
+      source: "wise"
+    });
+  }
+}

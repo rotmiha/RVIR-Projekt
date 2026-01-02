@@ -98,7 +98,7 @@ export function EventFormDialog({ open, onOpenChange, defaultValues }: EventForm
       queryClient.invalidateQueries({ queryKey: ["/api/events"] });
       queryClient.invalidateQueries({ queryKey: ["/api/conflicts"] });
 
-      Alert.alert("Event Created", "Your event has been added to the schedule.");
+      Alert.alert("Dogodek ustvarjen", "Dogodek je bil uspešno dodan v vaš urnik.");
       onOpenChange(false);
 
       setFormData({

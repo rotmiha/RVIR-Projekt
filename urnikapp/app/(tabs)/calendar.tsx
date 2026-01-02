@@ -12,9 +12,12 @@ import { useQuery } from "@tanstack/react-query";
 import { WeekCalendar } from "@/components/week-calendar";
 import { EventFormDialog } from "@/components/event-form-dialog";
 import { api } from "@/lib/api";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAuth } from "@/components/AuthProvider";
 
 type ApiEvent = {
   id: string;
+  userId?: string; // optional
   title: string;
   type: "study" | "personal";
   startTime: string;
@@ -24,18 +27,34 @@ type ApiEvent = {
 
 export default function CalendarScreen() {
   const [showEventDialog, setShowEventDialog] = useState(false);
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
 
-  const { data: events = [], isLoading } = useQuery<ApiEvent[]>({
-    queryKey: ["/api/events"],
-    queryFn: () => api.getEvents(),
+  const TAB_HEIGHT = 62;
+  const GAP = 8;
+  const topPad = insets.top + GAP + TAB_HEIGHT + 12;
+
+  const userId = user?.id;
+
+  const {
+    data: events = [],
+    isLoading,
+    isFetching,
+    error,
+  } = useQuery<ApiEvent[]>({
+    queryKey: ["/api/events", userId],
+    enabled: !!userId,
+    queryFn: () => api.getEventsForUser(userId as string),
   });
+
+
 
   const calendarEvents = useMemo(
     () =>
       events.map((event) => ({
         id: event.id,
         title: event.title,
-        type: event.type as "učenje" | "osebno", // prilagodi, če WeekCalendar pričakuje kaj drugega
+        type: event.type as "study" | "personal",
         startTime: new Date(event.startTime),
         endTime: new Date(event.endTime),
         location: event.location || undefined,
@@ -44,11 +63,18 @@ export default function CalendarScreen() {
   );
 
   return (
-    <ScrollView style={styles.bg} contentContainerStyle={styles.container}>
+    <ScrollView style={styles.bg} contentContainerStyle={[styles.container, { paddingTop: topPad }]}>
       <View style={styles.headerRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Tedenski koledar</Text>
-          <Text style={styles.subtitle}>Vaš celoten urnik na enem mestu</Text>
+          <Text style={styles.subtitle}>
+            {isFetching ? "Osveževanje…" : "Vaš celoten urnik na enem mestu"}
+          </Text>
+          {!!error && (
+            <Text style={{ marginTop: 6, color: "crimson" }}>
+              Napaka pri nalaganju dogodkov.
+            </Text>
+          )}
         </View>
 
         <Pressable

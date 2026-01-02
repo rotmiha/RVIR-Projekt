@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertEventSchema } from "@shared/schema";
@@ -13,16 +13,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  // Get all events for the default user
-  app.get("/api/events", async (_req, res) => {
-    try {
-      const events = await storage.getEventsByUserId("default-user-id");
-      res.json(events);
-    } catch (error) {
-      console.error("Error fetching events:", error);
-      res.status(500).json({ error: "Failed to fetch events" });
-    }
-  });
+
+const getEventsForUser: RequestHandler = async (req, res) => {
+  try {
+    const userId = String(req.query.userId ?? "");
+    if (!userId) return res.status(400).json({ message: "Missing userId" });
+
+    const events = await storage.getEventsByUserId(userId);
+    return res.json({ events });
+  } catch (e: any) {
+    console.error("GET /api/events error:", e);
+    return res.status(500).json({ message: e?.message ?? String(e) });
+  }
+};
+
+app.get("/api/events", getEventsForUser);
+
 
   // Get events within a date range
   app.get("/api/events/range", async (req, res) => {
@@ -66,48 +72,125 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
- app.post("/api/events", async (req, res) => {
-  try {
-    console.log("POST /api/events - body:", req.body);
 
-    const startTime = new Date(req.body.startTime);
-    const endTime = new Date(req.body.endTime);
 
-    if (isNaN(startTime.getTime())) {
-      return res.status(400).json({ error: "Invalid startTime format" });
+    async function parseIcsToEvents(icsText: string) {
+      const ical = await import("node-ical");
+      const parsed = ical.parseICS(icsText);
+
+      const events: Array<{
+        title: string;
+        startTime: Date;
+        endTime: Date;
+        location: string | null;
+        description: string | null;
+      }> = [];
+
+      for (const k in parsed) {
+        const ev: any = (parsed as any)[k];
+        if (ev?.type === "VEVENT") {
+          events.push({
+            title: ev.summary || "Untitled Event",
+            startTime: ev.start,
+            endTime: ev.end,
+            location: ev.location || null,
+            description: ev.description || null,
+          });
+        }
+      }
+
+      return events;
     }
-    if (isNaN(endTime.getTime())) {
-      return res.status(400).json({ error: "Invalid endTime format" });
-    }
-    if (startTime >= endTime) {
-      return res.status(400).json({ error: "Event end time must be after start time" });
+
+
+    async function deleteWiseImportedEvents(userId: string) {
+      const all = await storage.getEventsByUserId(userId);
+      const wiseOnes = all.filter((e: any) => e.source === "wise");
+      await Promise.all(wiseOnes.map((e: any) => storage.deleteEvent(e.id)));
     }
 
-    console.log("POST /api/events - dates OK");
+    app.post("/api/import/wise", async (req, res) => {
+      console.log("✅ HIT /api/import/wise", req.body);
 
-    const validatedData = insertEventSchema.parse({
-      ...req.body,
-      userId: "default-user-id",
-      startTime,
-      endTime,
+      const { programValue, yearValue } = req.body ?? {};
+      const userId = "default-user-id"; // ker tvoj app povsod uporablja default-user-id :contentReference[oaicite:2]{index=2}
+
+      if (!programValue || !yearValue) {
+        return res.status(400).json({
+          message: "Missing programValue / yearValue",
+        });
+      }
+
+      // Playwright
+      const { chromium } = await import("playwright");
+
+      const browser = await chromium.launch({ headless: true });
+      const context = await browser.newContext({ acceptDownloads: true });
+      const page = await context.newPage();
+
+      try {
+        await page.goto("https://wise-tt.com/wtt_um_feri/index.jsp", {
+          waitUntil: "domcontentloaded",
+          timeout: 60000,
+        });
+
+        // program
+        await page.selectOption('select[id="form:j_idt175_input"]', String(programValue));
+        await page.waitForLoadState("networkidle");
+
+        // letnik
+        await page.selectOption('select[id="form:j_idt179_input"]', String(yearValue));
+        await page.waitForLoadState("networkidle");
+
+        // download iCal
+        const [download] = await Promise.all([
+          page.waitForEvent("download"),
+          page.locator('button:has-text("iCal-vse")').first().click(),
+        ]);
+
+        const path = await download.path();
+        if (!path) throw new Error("No download path");
+
+        const fs = await import("node:fs/promises");
+        const icsText = await fs.readFile(path, "utf8");
+
+        // parse ICS -> events
+        const parsedEvents = await parseIcsToEvents(icsText);
+
+        // (priporočeno) pobriši stare WISE uvoze
+        await deleteWiseImportedEvents(userId);
+
+        // insert v DB (enako kot /api/import/events)
+        const importedEvents = [];
+        for (const ev of parsedEvents) {
+          const validatedData = insertEventSchema.parse({
+            userId,
+            title: ev.title,
+            type: "study", // ali mapiraj po potrebi
+            startTime: new Date(ev.startTime),
+            endTime: new Date(ev.endTime),
+            location: ev.location,
+            description: ev.description,
+            source: "wise",
+          });
+
+          const created = await storage.createEvent(validatedData);
+          importedEvents.push(created);
+        }
+
+        res.setHeader("X-WISE-ICAL", "1");
+        return res.json({
+          success: true,
+          imported: importedEvents.length,
+        });
+      } catch (e: any) {
+        console.error("❌ WISE IMPORT ERROR:", e);
+        return res.status(500).json({ message: e?.message ?? String(e) });
+      } finally {
+        await context.close();
+        await browser.close();
+      }
     });
-
-    console.log("POST /api/events - zod OK, calling storage.createEvent...");
-
-    const event = await storage.createEvent(validatedData);
-
-    console.log("POST /api/events - storage.createEvent DONE");
-
-    return res.status(201).json(event);
-  } catch (error: any) {
-    console.error("Error creating event:", error);
-    if (error.name === "ZodError") {
-      return res.status(400).json({ error: "Invalid event data", details: error.errors });
-    }
-    return res.status(500).json({ error: "Failed to create event" });
-  }
-});
-
 
   // Update an event
   app.put("/api/events/:id", async (req, res) => {
@@ -371,6 +454,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ error: "Failed to send notification" });
     }
   });
+
+
 
   // Send daily digest
   app.post("/api/notifications/digest", async (req, res) => {
