@@ -4,6 +4,9 @@ import { log } from "./vite"; // setupVite + serveStatic odstranjeno (frontend d
 // import { setupVite, serveStatic, log } from "./vite";
 import { chromium } from "playwright";
 import { storage } from "./storage";
+import { db } from "./db";
+import { events } from "@shared/schema";
+import { and, eq, isNull } from "drizzle-orm";
 
 const app = express();
 
@@ -20,6 +23,7 @@ app.use(
     },
   })
 );
+
 app.use(express.urlencoded({ extended: false }));
 
 app.use((req, _res, next) => {
@@ -72,17 +76,31 @@ app.get("/api/ping", (_req, res) => {
 
 
 
-
+const wiseImportLocks = new Map<string, boolean>();
 
 app.post("/api/import/wise", async (req, res) => {
-  console.log("✅ HIT /api/import/wise", req.body);
 
-  const { userId, programValue, yearValue } = req.body ?? {};
-  if (!userId || !programValue || !yearValue) {
-    return res.status(400).json({
-      message: "Missing userId / programValue / yearValue",
-    });
-  }
+     console.log("✅ HIT /api/import/wise", req.body);
+
+    const { programValue, yearValue } = req.body ?? {};
+    if (!programValue || !yearValue) {
+      return res.status(400).json({ message: "Missing programValue / yearValue" });
+    }
+
+
+    const program = String(programValue);
+    const year = String(yearValue);
+    const lockKey = `${program}||${year}`;
+
+    if (wiseImportLocks.get(lockKey)) {
+      return res.status(409).json({
+        status: "busy",
+        message: "WISE import že teče za ta program/letnik.",
+      });
+    }
+
+    wiseImportLocks.set(lockKey, true);
+
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ acceptDownloads: true });
@@ -294,19 +312,35 @@ app.post("/api/import/wise", async (req, res) => {
     const parsedEvents = await parseIcsToEvents(icsText);
     console.log("📊 parsed events:", parsedEvents.length);
 
-    await deleteWiseImportedEvents(userId);
-    await insertImportedEvents(userId, parsedEvents);
+      const program = String(programValue);
+      const year = String(yearValue);
 
-    const all = await storage.getEventsByUserId(userId);
+      const existing = await getWiseScheduleEvents(program, year);
 
-    const wiseEvents = all.filter((e: any) => e.source === "wise" || e.source === "imported");
+      // če je enako, nič ne delaj
+      if (sameEventSet(program, year, parsedEvents, existing)) {
+        res.setHeader("X-WISE-ICAL", "1");
+        return res.json({
+          status: "unchanged",
+          message: "Urnik je že posodobljen (ni sprememb).",
+          imported: 0,
+          events: existing,
+        });
+      }
 
-    res.setHeader("X-WISE-ICAL", "1");
+      // drugače posodobi (replace)
+      await deleteWiseImportedEventsForSchedule(program, year);
+      await insertImportedEventsForSchedule(program, year, parsedEvents);
 
-    return res.json({
-      imported: parsedEvents.length,
-      events: wiseEvents,
-    });
+      const wiseEvents = await getWiseScheduleEvents(program, year);
+      res.setHeader("X-WISE-ICAL", "1");
+      return res.json({
+        status: "updated",
+        message: "Urnik posodobljen.",
+        imported: parsedEvents.length,
+        events: wiseEvents,
+      });
+
   } catch (e: any) {
     console.error("❌ WISE IMPORT ERROR:", e);
     return res.status(500).json({
@@ -319,9 +353,138 @@ app.post("/api/import/wise", async (req, res) => {
 });
 
 
+// pobriši vse stare imported shared evente za program/year
+async function deleteWiseImportedEventsForSchedule(program: string, year: string) {
+  await db
+    .delete(events)
+    .where(
+      and(
+        isNull(events.ownerUserId),          // shared
+        eq(events.program, program),
+        eq(events.year, year),
+        eq(events.source, "imported")        // ali "wise" – kar uporabljaš
+      )
+    );
+}
+
+type ParsedEvent = {
+  title: string;
+  type?: "study" | "personal"; // ali kar parseIcsToEvents vrne
+  startTime: Date;
+  endTime: Date;
+  location?: string | null;
+  description?: string | null;
+};
+
+// insert novih shared eventov
+async function insertImportedEventsForSchedule(program: string, year: string, parsedEvents: ParsedEvent[]) {
+  if (!parsedEvents.length) return;
+
+  await db.insert(events).values(
+    parsedEvents.map((ev) => ({
+      ownerUserId: null,          // ✅ shared
+      program,
+      year,
+      title: ev.title,
+      type: ev.type ?? "study",
+      startTime: ev.startTime,
+      endTime: ev.endTime,
+      location: ev.location ?? null,
+      description: ev.description ?? null,
+      source: "imported",
+    }))
+  );
+}
+
+// vrni schedule evente za program/year
+async function getWiseScheduleEvents(program: string, year: string) {
+  return db
+    .select()
+    .from(events)
+    .where(
+      and(
+        isNull(events.ownerUserId),
+        eq(events.program, program),
+        eq(events.year, year)
+      )
+    );
+}
 
 
+function normStr(s: any) {
+  return String(s ?? "").trim().replace(/\s+/g, " ");
+}
 
+function toIso(v: any) {
+  const d = v instanceof Date ? v : new Date(v);
+  return isNaN(d.getTime()) ? String(v) : d.toISOString();
+}
+
+function eventKeyLikeDb(program: string, year: string, ev: {
+  title: any;
+  type?: any;
+  startTime: any;
+  endTime: any;
+  location?: any;
+  description?: any;
+}) {
+  // isti “shape” kot v insertu
+  const title = normStr(ev.title);
+  const type = normStr(ev.type ?? "study");
+  const startTime = toIso(ev.startTime);
+  const endTime = toIso(ev.endTime);
+  const location = normStr(ev.location ?? "");
+  const description = normStr(ev.description ?? "");
+
+  // program/year vključimo, da je ključ vezan na urnik
+  return [
+    normStr(program),
+    normStr(year),
+    title,
+    type,
+    startTime,
+    endTime,
+    location,
+    description,
+  ].join("||");
+}
+
+function sameEventSet(
+  program: string,
+  year: string,
+  incoming: ParsedEvent[],
+  existing: Array<{
+    title: string;
+    type: string;
+    startTime: string | Date;
+    endTime: string | Date;
+    location?: string | null;
+    description?: string | null;
+    source?: string | null;     // ✅ allow null
+    program?: string | null;    // (optional, če select vrača null)
+    year?: string | null;       // (optional)
+  }>
+) {
+  const a = new Set(incoming.map((ev) => eventKeyLikeDb(program, year, ev)));
+
+  // primerjaj samo imported
+  const importedOnly = existing.filter((e) => (e.source ?? "") === "imported");
+
+  const b = new Set(
+    importedOnly.map((e) =>
+      eventKeyLikeDb(program, year, {
+        title: e.title,
+        type: e.type,
+        startTime: e.startTime,
+        endTime: e.endTime,
+        location: e.location ?? null,
+        description: e.description ?? null,
+      })
+    )
+  );
+  if (a.size !== b.size) return false;
+  return Array.from(a).every((k) => b.has(k));
+}
 
 
 

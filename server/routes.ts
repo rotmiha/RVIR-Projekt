@@ -1,10 +1,15 @@
+import { z } from "zod";
 import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
 import { insertEventSchema } from "@shared/schema";
 import multer from "multer";
 import { emailService } from "./services/email";
+import bcrypt from "bcryptjs";
 
+import { events } from "../shared/schema";
+import { db } from "./db";
+import { and, or, eq, isNull, sql } from "drizzle-orm";
+import { storage } from "./storage";
 const upload = multer({ storage: multer.memoryStorage() });
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -350,45 +355,6 @@ app.get("/api/events", getEventsForUser);
     }
   });
 
-  // Import parsed events into the database
-  app.post("/api/import/events", async (req, res) => {
-    try {
-      const { events } = req.body;
-      
-      if (!Array.isArray(events)) {
-        return res.status(400).json({ error: "Events must be an array" });
-      }
-
-      const importedEvents = [];
-      for (const eventData of events) {
-        const validatedData = insertEventSchema.parse({
-          userId: "default-user-id",
-          title: eventData.title,
-          type: eventData.type || 'study', // Default to study for imported events
-          startTime: new Date(eventData.startTime),
-          endTime: new Date(eventData.endTime),
-          location: eventData.location,
-          description: eventData.description,
-          source: 'imported',
-        });
-
-        const event = await storage.createEvent(validatedData);
-        importedEvents.push(event);
-      }
-
-      res.status(201).json({ 
-        success: true, 
-        imported: importedEvents.length,
-        events: importedEvents 
-      });
-    } catch (error: any) {
-      console.error("Error importing events:", error);
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ error: "Invalid event data", details: error.errors });
-      }
-      res.status(500).json({ error: "Failed to import events" });
-    }
-  });
 
   // Send test email
   app.post("/api/notifications/test", async (req, res) => {
@@ -454,6 +420,163 @@ app.get("/api/events", getEventsForUser);
       res.status(500).json({ error: "Failed to send notification" });
     }
   });
+
+
+    const createEventRequestSchema = z.object({
+      userId: z.string().min(1),
+      title: z.string().min(1),
+      type: z.enum(["study", "personal"]),
+      startTime: z.coerce.date(), // sprejme number/string
+      endTime: z.coerce.date(),
+      location: z.string().optional().nullable(),
+      description: z.string().optional().nullable(),
+    });
+
+    app.post("/api/events", async (req, res) => {
+      try {
+        const body = createEventRequestSchema.parse(req.body);
+
+        const validated = insertEventSchema.parse({
+          ownerUserId: body.userId,          // ✅ map
+          program: null,
+          year: null,
+          title: body.title,
+          type: body.type,
+          startTime: body.startTime,
+          endTime: body.endTime,
+          location: body.location ?? null,
+          description: body.description ?? null,
+          source: "manual",
+        });
+
+        const created = await storage.createEvent(validated);
+        return res.status(201).json(created);
+      } catch (e: any) {
+        console.error("POST /api/events error:", e);
+        return res.status(400).json({ message: e?.message ?? String(e) });
+      }
+    });
+
+
+app.get("/api/calendar-events", async (req, res) => {
+  try {
+
+    const userId = String(req.query.userId ?? "");
+    const program = String(req.query.program ?? "");
+    const year = String(req.query.year ?? "");
+    console.log("✅ HIT /api/calendar-events", { userId, program, year });
+
+    if (!userId) return res.status(400).json({ message: "Missing userId" });
+    if (!program || !year) return res.status(400).json({ message: "Missing program/year" });
+
+    const query = db
+      .select()
+      .from(events)
+      .where(
+        or(
+          and(
+            sql<boolean>`${events.ownerUserId} IS NULL`,
+            eq(events.program, program),
+            eq(events.year, year)
+          ),
+          eq(events.ownerUserId, userId)
+        )
+      );
+
+    const { sql: text, params } = query.toSQL();
+  
+
+    const rows = await query; // ✅ execute the SAME query you logged
+
+    return res.json(rows);
+  } catch (e: any) {
+    // ✅ log the *full* error object (Postgres often includes position/code/detail)
+    console.error("calendar-events error:", e);
+    return res.status(500).json({
+      message: e?.message ?? String(e),
+      code: e?.code,
+      position: e?.position,
+      detail: e?.detail,
+      hint: e?.hint,
+    });
+  }
+});
+
+  // REGISTER
+app.post("/api/auth/register", async (req, res) => {
+  try {
+
+    const { z } = await import("zod"); // ✅ tukaj
+
+
+    const body = z.object({
+      username: z.string().min(1),
+      email: z.string().email(),
+      password: z.string().min(1),
+      program: z.string().optional().nullable(),
+      year: z.string().optional().nullable(),
+    }).parse(req.body);
+
+    const cleanEmail = body.email.trim().toLowerCase();
+    const cleanUsername = body.username.trim();
+    console.log("ZOD LOADED:", typeof z);
+
+    // (opcijsko) preveri, če email že obstaja
+    const existing = await storage.getUserByEmail(cleanEmail);
+    if (existing) return res.status(409).json({ message: "Email je že registriran" });
+
+    const hash = await bcrypt.hash(body.password, 10);
+
+    const created = await storage.createUser({
+      username: cleanUsername,
+      email: cleanEmail,
+      password: hash,
+      program: body.program ?? null,
+      year: body.year ?? null,
+    } as any);
+
+    return res.status(201).json({
+      user: {
+        id: created.id,
+        username: created.username,
+        email: created.email,
+        program: (created as any).program ?? null,
+        year: (created as any).year ?? null,
+      },
+    });
+  } catch (e: any) {
+    return res.status(400).json({ message: e?.message ?? String(e) });
+  }
+});
+
+// LOGIN
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const body = z.object({
+      email: z.string().email(),
+      password: z.string().min(1),
+    }).parse(req.body);
+
+    const cleanEmail = body.email.trim().toLowerCase();
+    const user = await storage.getUserByEmail(cleanEmail);
+    if (!user) return res.status(401).json({ message: "Napačen email ali geslo" });
+
+    const ok = await bcrypt.compare(body.password, (user as any).password);
+    if (!ok) return res.status(401).json({ message: "Napačen email ali geslo" });
+
+    return res.json({
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        program: (user as any).program ?? null,
+        year: (user as any).year ?? null,
+      },
+    });
+  } catch (e: any) {
+    return res.status(400).json({ message: e?.message ?? String(e) });
+  }
+});
 
 
 

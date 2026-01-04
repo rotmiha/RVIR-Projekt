@@ -11,6 +11,7 @@ import { router } from "expo-router";
 import { Picker } from "@react-native-picker/picker";
 import { loginUser, registerUser } from "@/lib/authlib";
 import { useAuth } from "@/components/AuthProvider";
+import { queryClient } from "@/lib/queryClient";
 
 type ProgramLevel = "undergrad" | "master" | "phd" | "other";
 
@@ -91,8 +92,13 @@ export default function LoginScreen() {
           }
 
           const user = await loginUser(email, password);
+
+
           await setLoggedIn(user);
+
+          queryClient.invalidateQueries({ queryKey: ["/api/calendar-events", "asdasdasd", program, year] });
           router.replace("/(tabs)/dashboard");
+
         } catch (e: any) {
           Alert.alert("Napaka", e?.message ?? "Nekaj je šlo narobe");
         } finally {

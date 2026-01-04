@@ -1,114 +1,67 @@
+var __defProp = Object.defineProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+
 // server/index.ts
 import express2 from "express";
 
 // server/routes.ts
+import { z as z2 } from "zod";
 import { createServer } from "http";
 
-// server/storage.ts
-import { randomUUID } from "crypto";
-var MemStorage = class {
-  users;
-  events;
-  constructor() {
-    this.users = /* @__PURE__ */ new Map();
-    this.events = /* @__PURE__ */ new Map();
-    const defaultUser = {
-      id: "default-user-id",
-      username: "admin",
-      email: "admin@scheduleapp.com",
-      password: "hashed_password"
-    };
-    this.users.set(defaultUser.id, defaultUser);
-  }
-  async getUser(id) {
-    return this.users.get(id);
-  }
-  async getUserByUsername(username) {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username
-    );
-  }
-  async getUserByEmail(email) {
-    return Array.from(this.users.values()).find(
-      (user) => user.email === email
-    );
-  }
-  async createUser(insertUser) {
-    const id = randomUUID();
-    const user = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
-  }
-  async getEvent(id) {
-    return this.events.get(id);
-  }
-  async getEventsByUserId(userId) {
-    return Array.from(this.events.values()).filter(
-      (event) => event.userId === userId
-    );
-  }
-  async getEventsByUserIdAndDateRange(userId, startDate, endDate) {
-    return Array.from(this.events.values()).filter(
-      (event) => event.userId === userId && event.startTime < endDate && event.endTime > startDate
-    );
-  }
-  async createEvent(insertEvent) {
-    const id = randomUUID();
-    const event = {
-      id,
-      ...insertEvent,
-      location: insertEvent.location ?? null,
-      description: insertEvent.description ?? null,
-      source: insertEvent.source || "manual"
-    };
-    this.events.set(id, event);
-    return event;
-  }
-  async updateEvent(id, updates) {
-    const event = this.events.get(id);
-    if (!event) return void 0;
-    const updatedEvent = { ...event, ...updates };
-    this.events.set(id, updatedEvent);
-    return updatedEvent;
-  }
-  async deleteEvent(id) {
-    return this.events.delete(id);
-  }
-};
-var storage = new MemStorage();
-
 // shared/schema.ts
+var schema_exports = {};
+__export(schema_exports, {
+  events: () => events,
+  insertEventSchema: () => insertEventSchema,
+  insertUserSchema: () => insertUserSchema,
+  users: () => users
+});
 import { sql } from "drizzle-orm";
 import { pgTable, text, varchar, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+console.log("[SCHEMA LOADED FROM]", import.meta.url);
 var users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
   email: text("email").notNull().unique(),
-  password: text("password").notNull()
+  password: text("password").notNull(),
+  program: text("program"),
+  year: text("year")
 });
 var events = pgTable("events", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // ✅ če je NULL => shared schedule event
+  // ✅ če je nastavljen => user-specific (personal/manual)
+  ownerUserId: varchar("owner_user_id"),
+  // za shared schedule
+  program: text("program"),
+  year: text("year"),
   title: text("title").notNull(),
   type: text("type").notNull(),
-  // 'study' or 'personal'
+  // 'study' | 'personal'
   startTime: timestamp("start_time").notNull(),
   endTime: timestamp("end_time").notNull(),
   location: text("location"),
   description: text("description"),
   source: text("source").default("manual")
-  // 'manual' or 'imported'
+  // 'manual' | 'imported'
 });
 var insertUserSchema = createInsertSchema(users).omit({
   id: true
 });
-var insertEventSchema = createInsertSchema(events).omit({
-  id: true
-}).extend({
+var insertEventSchema = createInsertSchema(events).omit({ id: true }).extend({
   type: z.enum(["study", "personal"]),
-  source: z.enum(["manual", "imported"]).optional()
+  source: z.enum(["manual", "imported"]).optional(),
+  // ✅ KLJUČNO: sprejmi JSON (string/number) in pretvori v Date
+  startTime: z.coerce.date(),
+  endTime: z.coerce.date()
+}).refine((d) => d.endTime > d.startTime, {
+  message: "endTime must be after startTime",
+  path: ["endTime"]
 });
 
 // server/routes.ts
@@ -389,6 +342,82 @@ var EmailService = class {
 var emailService = new EmailService();
 
 // server/routes.ts
+import bcrypt from "bcryptjs";
+
+// server/db.ts
+import { Pool, neonConfig } from "@neondatabase/serverless";
+import { drizzle } from "drizzle-orm/neon-serverless";
+import ws from "ws";
+neonConfig.webSocketConstructor = ws;
+var ssss = "postgresql://neondb_owner:npg_LQx9fhs3cwtn@ep-calm-pond-agmcrmms-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require";
+if (!ssss) {
+  throw new Error(
+    "DATABASE_URL must be set. Did you forget to provision a database?"
+  );
+}
+var pool = new Pool({ connectionString: ssss });
+var db = drizzle({ client: pool, schema: schema_exports });
+console.log("SCHEMA KEYS:", Object.keys(schema_exports));
+console.log("EVENTS TABLE:", events);
+
+// server/routes.ts
+import { and as and2, or, eq as eq2, sql as sql2 } from "drizzle-orm";
+
+// server/storage.ts
+import "dotenv/config";
+import { lt, gt } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
+var DbStorage = class {
+  // Users
+  async getUser(id) {
+    const [u] = await db.select().from(users).where(eq(users.id, id));
+    return u;
+  }
+  async getUserByUsername(username) {
+    const [u] = await db.select().from(users).where(eq(users.username, username));
+    return u;
+  }
+  async getUserByEmail(email) {
+    const [u] = await db.select().from(users).where(eq(users.email, email));
+    return u;
+  }
+  async createUser(user) {
+    const [u] = await db.insert(users).values(user).returning();
+    return u;
+  }
+  // Events
+  async getEvent(id) {
+    const [e] = await db.select().from(events).where(eq(events.id, id));
+    return e;
+  }
+  async getEventsByUserId(userId) {
+    return db.select().from(events).where(eq(events.ownerUserId, userId));
+  }
+  async getEventsByUserIdAndDateRange(userId, startDate, endDate) {
+    return db.select().from(events).where(
+      and(
+        eq(events.ownerUserId, userId),
+        lt(events.startTime, endDate),
+        gt(events.endTime, startDate)
+      )
+    );
+  }
+  async createEvent(event) {
+    const [e] = await db.insert(events).values(event).returning();
+    return e;
+  }
+  async updateEvent(id, updates) {
+    const [e] = await db.update(events).set(updates).where(eq(events.id, id)).returning();
+    return e;
+  }
+  async deleteEvent(id) {
+    await db.delete(events).where(eq(events.id, id));
+    return true;
+  }
+};
+var storage = new DbStorage();
+
+// server/routes.ts
 var upload = multer({ storage: multer.memoryStorage() });
 async function registerRoutes(app2) {
   app2.get("/api/health", (_req, res) => {
@@ -458,7 +487,7 @@ async function registerRoutes(app2) {
     }
     return events2;
   }
-  async function deleteWiseImportedEvents2(userId) {
+  async function deleteWiseImportedEvents(userId) {
     const all = await storage.getEventsByUserId(userId);
     const wiseOnes = all.filter((e) => e.source === "wise");
     await Promise.all(wiseOnes.map((e) => storage.deleteEvent(e.id)));
@@ -494,7 +523,7 @@ async function registerRoutes(app2) {
       const fs = await import("node:fs/promises");
       const icsText = await fs.readFile(path2, "utf8");
       const parsedEvents = await parseIcsToEvents2(icsText);
-      await deleteWiseImportedEvents2(userId);
+      await deleteWiseImportedEvents(userId);
       const importedEvents = [];
       for (const ev of parsedEvents) {
         const validatedData = insertEventSchema.parse({
@@ -649,41 +678,6 @@ async function registerRoutes(app2) {
       res.status(500).json({ error: "Failed to parse ICS file" });
     }
   });
-  app2.post("/api/import/events", async (req, res) => {
-    try {
-      const { events: events2 } = req.body;
-      if (!Array.isArray(events2)) {
-        return res.status(400).json({ error: "Events must be an array" });
-      }
-      const importedEvents = [];
-      for (const eventData of events2) {
-        const validatedData = insertEventSchema.parse({
-          userId: "default-user-id",
-          title: eventData.title,
-          type: eventData.type || "study",
-          // Default to study for imported events
-          startTime: new Date(eventData.startTime),
-          endTime: new Date(eventData.endTime),
-          location: eventData.location,
-          description: eventData.description,
-          source: "imported"
-        });
-        const event = await storage.createEvent(validatedData);
-        importedEvents.push(event);
-      }
-      res.status(201).json({
-        success: true,
-        imported: importedEvents.length,
-        events: importedEvents
-      });
-    } catch (error) {
-      console.error("Error importing events:", error);
-      if (error.name === "ZodError") {
-        return res.status(400).json({ error: "Invalid event data", details: error.errors });
-      }
-      res.status(500).json({ error: "Failed to import events" });
-    }
-  });
   app2.post("/api/notifications/test", async (req, res) => {
     try {
       const { email } = req.body;
@@ -735,6 +729,131 @@ async function registerRoutes(app2) {
     } catch (error) {
       console.error("Error sending conflict notification:", error);
       res.status(500).json({ error: "Failed to send notification" });
+    }
+  });
+  const createEventRequestSchema = z2.object({
+    userId: z2.string().min(1),
+    title: z2.string().min(1),
+    type: z2.enum(["study", "personal"]),
+    startTime: z2.coerce.date(),
+    // sprejme number/string
+    endTime: z2.coerce.date(),
+    location: z2.string().optional().nullable(),
+    description: z2.string().optional().nullable()
+  });
+  app2.post("/api/events", async (req, res) => {
+    try {
+      const body = createEventRequestSchema.parse(req.body);
+      const validated = insertEventSchema.parse({
+        ownerUserId: body.userId,
+        // ✅ map
+        program: null,
+        year: null,
+        title: body.title,
+        type: body.type,
+        startTime: body.startTime,
+        endTime: body.endTime,
+        location: body.location ?? null,
+        description: body.description ?? null,
+        source: "manual"
+      });
+      const created = await storage.createEvent(validated);
+      return res.status(201).json(created);
+    } catch (e) {
+      console.error("POST /api/events error:", e);
+      return res.status(400).json({ message: e?.message ?? String(e) });
+    }
+  });
+  app2.get("/api/calendar-events", async (req, res) => {
+    try {
+      const userId = String(req.query.userId ?? "");
+      const program = String(req.query.program ?? "");
+      const year = String(req.query.year ?? "");
+      console.log("\u2705 HIT /api/calendar-events", { userId, program, year });
+      if (!userId) return res.status(400).json({ message: "Missing userId" });
+      if (!program || !year) return res.status(400).json({ message: "Missing program/year" });
+      const query = db.select().from(events).where(
+        or(
+          and2(
+            sql2`${events.ownerUserId} IS NULL`,
+            eq2(events.program, program),
+            eq2(events.year, year)
+          ),
+          eq2(events.ownerUserId, userId)
+        )
+      );
+      const { sql: text2, params } = query.toSQL();
+      const rows = await query;
+      return res.json(rows);
+    } catch (e) {
+      console.error("calendar-events error:", e);
+      return res.status(500).json({
+        message: e?.message ?? String(e),
+        code: e?.code,
+        position: e?.position,
+        detail: e?.detail,
+        hint: e?.hint
+      });
+    }
+  });
+  app2.post("/api/auth/register", async (req, res) => {
+    try {
+      const { z: z3 } = await import("zod");
+      const body = z3.object({
+        username: z3.string().min(1),
+        email: z3.string().email(),
+        password: z3.string().min(1),
+        program: z3.string().optional().nullable(),
+        year: z3.string().optional().nullable()
+      }).parse(req.body);
+      const cleanEmail = body.email.trim().toLowerCase();
+      const cleanUsername = body.username.trim();
+      console.log("ZOD LOADED:", typeof z3);
+      const existing = await storage.getUserByEmail(cleanEmail);
+      if (existing) return res.status(409).json({ message: "Email je \u017Ee registriran" });
+      const hash = await bcrypt.hash(body.password, 10);
+      const created = await storage.createUser({
+        username: cleanUsername,
+        email: cleanEmail,
+        password: hash,
+        program: body.program ?? null,
+        year: body.year ?? null
+      });
+      return res.status(201).json({
+        user: {
+          id: created.id,
+          username: created.username,
+          email: created.email,
+          program: created.program ?? null,
+          year: created.year ?? null
+        }
+      });
+    } catch (e) {
+      return res.status(400).json({ message: e?.message ?? String(e) });
+    }
+  });
+  app2.post("/api/auth/login", async (req, res) => {
+    try {
+      const body = z2.object({
+        email: z2.string().email(),
+        password: z2.string().min(1)
+      }).parse(req.body);
+      const cleanEmail = body.email.trim().toLowerCase();
+      const user = await storage.getUserByEmail(cleanEmail);
+      if (!user) return res.status(401).json({ message: "Napa\u010Den email ali geslo" });
+      const ok = await bcrypt.compare(body.password, user.password);
+      if (!ok) return res.status(401).json({ message: "Napa\u010Den email ali geslo" });
+      return res.json({
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          program: user.program ?? null,
+          year: user.year ?? null
+        }
+      });
+    } catch (e) {
+      return res.status(400).json({ message: e?.message ?? String(e) });
     }
   });
   app2.post("/api/notifications/digest", async (req, res) => {
@@ -824,6 +943,7 @@ function log(message, source = "express") {
 
 // server/index.ts
 import { chromium } from "playwright";
+import { and as and3, eq as eq3, isNull as isNull3 } from "drizzle-orm";
 var app = express2();
 app.use(
   express2.json({
@@ -856,23 +976,27 @@ async function parseIcsToEvents(icsText) {
   }
   return events2;
 }
-async function deleteWiseImportedEvents(userId) {
-  const all = await storage.getEventsByUserId(userId);
-  const wiseOnes = all.filter((e) => e.source === "wise");
-  await Promise.all(wiseOnes.map((e) => storage.deleteEvent(e.id)));
-}
 app.get("/api/ping", (_req, res) => {
   console.log("PING HIT /api/ping");
   res.json({ ok: true });
 });
+var wiseImportLocks = /* @__PURE__ */ new Map();
 app.post("/api/import/wise", async (req, res) => {
   console.log("\u2705 HIT /api/import/wise", req.body);
-  const { userId, programValue, yearValue } = req.body ?? {};
-  if (!userId || !programValue || !yearValue) {
-    return res.status(400).json({
-      message: "Missing userId / programValue / yearValue"
+  const { programValue, yearValue } = req.body ?? {};
+  if (!programValue || !yearValue) {
+    return res.status(400).json({ message: "Missing programValue / yearValue" });
+  }
+  const program = String(programValue);
+  const year = String(yearValue);
+  const lockKey = `${program}||${year}`;
+  if (wiseImportLocks.get(lockKey)) {
+    return res.status(409).json({
+      status: "busy",
+      message: "WISE import \u017Ee te\u010De za ta program/letnik."
     });
   }
+  wiseImportLocks.set(lockKey, true);
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
@@ -1016,12 +1140,25 @@ app.post("/api/import/wise", async (req, res) => {
     }
     const parsedEvents = await parseIcsToEvents(icsText);
     console.log("\u{1F4CA} parsed events:", parsedEvents.length);
-    await deleteWiseImportedEvents(userId);
-    await insertImportedEvents(userId, parsedEvents);
-    const all = await storage.getEventsByUserId(userId);
-    const wiseEvents = all.filter((e) => e.source === "wise" || e.source === "imported");
+    const program2 = String(programValue);
+    const year2 = String(yearValue);
+    const existing = await getWiseScheduleEvents(program2, year2);
+    if (sameEventSet(program2, year2, parsedEvents, existing)) {
+      res.setHeader("X-WISE-ICAL", "1");
+      return res.json({
+        status: "unchanged",
+        message: "Urnik je \u017Ee posodobljen (ni sprememb).",
+        imported: 0,
+        events: existing
+      });
+    }
+    await deleteWiseImportedEventsForSchedule(program2, year2);
+    await insertImportedEventsForSchedule(program2, year2, parsedEvents);
+    const wiseEvents = await getWiseScheduleEvents(program2, year2);
     res.setHeader("X-WISE-ICAL", "1");
     return res.json({
+      status: "updated",
+      message: "Urnik posodobljen.",
       imported: parsedEvents.length,
       events: wiseEvents
     });
@@ -1035,6 +1172,88 @@ app.post("/api/import/wise", async (req, res) => {
     await browser.close();
   }
 });
+async function deleteWiseImportedEventsForSchedule(program, year) {
+  await db.delete(events).where(
+    and3(
+      isNull3(events.ownerUserId),
+      // shared
+      eq3(events.program, program),
+      eq3(events.year, year),
+      eq3(events.source, "imported")
+      // ali "wise" – kar uporabljaš
+    )
+  );
+}
+async function insertImportedEventsForSchedule(program, year, parsedEvents) {
+  if (!parsedEvents.length) return;
+  await db.insert(events).values(
+    parsedEvents.map((ev) => ({
+      ownerUserId: null,
+      // ✅ shared
+      program,
+      year,
+      title: ev.title,
+      type: ev.type ?? "study",
+      startTime: ev.startTime,
+      endTime: ev.endTime,
+      location: ev.location ?? null,
+      description: ev.description ?? null,
+      source: "imported"
+    }))
+  );
+}
+async function getWiseScheduleEvents(program, year) {
+  return db.select().from(events).where(
+    and3(
+      isNull3(events.ownerUserId),
+      eq3(events.program, program),
+      eq3(events.year, year)
+    )
+  );
+}
+function normStr(s) {
+  return String(s ?? "").trim().replace(/\s+/g, " ");
+}
+function toIso(v) {
+  const d = v instanceof Date ? v : new Date(v);
+  return isNaN(d.getTime()) ? String(v) : d.toISOString();
+}
+function eventKeyLikeDb(program, year, ev) {
+  const title = normStr(ev.title);
+  const type = normStr(ev.type ?? "study");
+  const startTime = toIso(ev.startTime);
+  const endTime = toIso(ev.endTime);
+  const location = normStr(ev.location ?? "");
+  const description = normStr(ev.description ?? "");
+  return [
+    normStr(program),
+    normStr(year),
+    title,
+    type,
+    startTime,
+    endTime,
+    location,
+    description
+  ].join("||");
+}
+function sameEventSet(program, year, incoming, existing) {
+  const a = new Set(incoming.map((ev) => eventKeyLikeDb(program, year, ev)));
+  const importedOnly = existing.filter((e) => (e.source ?? "") === "imported");
+  const b = new Set(
+    importedOnly.map(
+      (e) => eventKeyLikeDb(program, year, {
+        title: e.title,
+        type: e.type,
+        startTime: e.startTime,
+        endTime: e.endTime,
+        location: e.location ?? null,
+        description: e.description ?? null
+      })
+    )
+  );
+  if (a.size !== b.size) return false;
+  return Array.from(a).every((k) => b.has(k));
+}
 app.use((req, res, next) => {
   const start = Date.now();
   const path2 = req.path;
@@ -1082,17 +1301,3 @@ app.use((req, res, next) => {
     }
   );
 })();
-async function insertImportedEvents(userId, parsedEvents) {
-  for (const ev of parsedEvents) {
-    await storage.createEvent({
-      userId,
-      title: ev.title,
-      type: "study",
-      startTime: new Date(ev.startTime),
-      endTime: new Date(ev.endTime),
-      location: ev.location ?? null,
-      description: ev.description ?? null,
-      source: "wise"
-    });
-  }
-}

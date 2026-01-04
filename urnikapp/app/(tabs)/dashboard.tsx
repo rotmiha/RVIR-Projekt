@@ -43,22 +43,26 @@ export default function DashboardScreen() {
   const GAP = 8;
   const topPad = insets.top + GAP + TAB_HEIGHT + 12;
 
-  // 🔹 EVENTS – samo za prijavljenega userja
+  const program = user?.program ? String(user.program) : undefined;
+  const year = user?.year ? String(user.year) : undefined;
+
+  const eventsKey = ["/api/calendar-events", userId, program, year] as const;
+
+  // 🔹 EVENTS – shared(schedule) + personal(user)
   const {
     data: allEvents = [],
     isLoading: eventsLoading,
   } = useQuery<EventDto[]>({
-    queryKey: ["/api/events", userId],
-    enabled: !!userId,
-    queryFn: () => api.getEventsForUser(userId as string),
+    queryKey: eventsKey,
+    enabled: !!userId && !!program && !!year,
+    queryFn: () => api.getCalendarEvents(userId as string, program as string, year as string),
   });
 
-
-  // 🔹 DELETE EVENT
+  // 🔹 DELETE EVENT (to bo brisalo samo personal evente, shared ne bi smel)
   const deleteEventMutation = useMutation({
     mutationFn: (id: string) => api.deleteEvent(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/events", userId] });
+      queryClient.invalidateQueries({ queryKey: eventsKey });
       queryClient.invalidateQueries({ queryKey: ["/api/conflicts", userId] });
       console.log("Event deleted");
     },
@@ -67,42 +71,48 @@ export default function DashboardScreen() {
     },
   });
 
-  // 🔹 STATS
-  const { thisWeekEventsCount, totalStudyHours, upcomingEvents } = useMemo(() => {
+    const {
+    personalEvents,
+    sharedEvents,
+    personalThisWeekCount,
+    totalStudyHours,
+    upcomingEvents,
+  } = useMemo(() => {
     const now = new Date();
 
     const thisWeekStart = startOfWeek(now, { weekStartsOn: 1 });
     const thisWeekEnd = endOfWeek(now, { weekStartsOn: 1 });
 
-    const thisWeekEvents = allEvents.filter((event) => {
+    const personal = allEvents.filter((e) => e.type === "personal");
+    const shared = allEvents.filter((e) => e.type === "personal"); // v tvojem modelu je "study" praktično shared/urnik
+
+    const personalThisWeek = personal.filter((event) => {
       const eventStart = new Date(event.startTime);
       return eventStart >= thisWeekStart && eventStart <= thisWeekEnd;
     });
 
-    const studyEvents = allEvents.filter((e) => e.type === "study");
-    const hours = studyEvents.reduce((acc, event) => {
+    const studyHours = shared.reduce((acc, event) => {
       const duration =
-        (new Date(event.endTime).getTime() -
-          new Date(event.startTime).getTime()) /
+        (new Date(event.endTime).getTime() - new Date(event.startTime).getTime()) /
         (1000 * 60 * 60);
       return acc + duration;
     }, 0);
 
-    const upcoming = allEvents
+    // Upcoming: lahko kažeš samo personal (bolj smiselno)
+    const upcoming = personal
       .filter((event) => new Date(event.startTime) > now)
-      .sort(
-        (a, b) =>
-          new Date(a.startTime).getTime() -
-          new Date(b.startTime).getTime()
-      )
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
       .slice(0, 3);
 
     return {
-      thisWeekEventsCount: thisWeekEvents.length,
-      totalStudyHours: hours,
+      personalEvents: personal,
+      sharedEvents: shared,
+      personalThisWeekCount: personalThisWeek.length,
+      totalStudyHours: studyHours,
       upcomingEvents: upcoming,
     };
   }, [allEvents]);
+
 
   return (
     <ScrollView
@@ -131,18 +141,11 @@ export default function DashboardScreen() {
     
 
       <View style={styles.statsGrid}>
-        <View style={styles.statCell}>
-          <StatCard
-            title="Vse aktivnosti"
-            value={allEvents.length}
-            icon={"calendar"}
-            description="je/so zapisane"
-          />
-        </View>
+       
 
         <View style={styles.statCell}>
           <StatCard
-            title="Študijskih ur"
+            title="Osebne študijske ure"
             value={totalStudyHours.toFixed(1)}
             icon={"clock"}
             description="je/so zapisane"
@@ -152,8 +155,8 @@ export default function DashboardScreen() {
         
         <View style={styles.statCell}>
           <StatCard
-            title="Ta teden"
-            value={thisWeekEventsCount}
+            title="Tedenenske aktivnosti"
+            value={personalThisWeekCount}
             icon={"users"}
             description="aktivnosti"
           />
@@ -206,42 +209,7 @@ export default function DashboardScreen() {
         </View>
       </View>
 
-      {/* QUICK ACTIONS */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Hitre akcije</Text>
-
-        <View style={{ marginTop: 10, gap: 10 }}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.outlineBtn,
-              pressed && styles.pressed,
-            ]}
-            onPress={() => router.push("/(tabs)/import")}
-          >
-            <Text style={styles.outlineBtnText}>Uvozi urnik</Text>
-          </Pressable>
-
-          <Pressable
-            style={({ pressed }) => [
-              styles.outlineBtn,
-              pressed && styles.pressed,
-            ]}
-            onPress={() => router.push("/(tabs)/calendar")}
-          >
-            <Text style={styles.outlineBtnText}>Tedenski koledar</Text>
-          </Pressable>
-
-          <Pressable
-            style={({ pressed }) => [
-              styles.outlineBtn,
-              pressed && styles.pressed,
-            ]}
-            onPress={() => router.push("/(tabs)/settings")}
-          >
-            <Text style={styles.outlineBtnText}>Nastavitve</Text>
-          </Pressable>
-        </View>
-      </View>
+     
 
       <EventFormDialog
         open={showEventDialog}
