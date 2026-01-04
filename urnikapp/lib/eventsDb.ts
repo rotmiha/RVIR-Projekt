@@ -23,11 +23,7 @@ function uuid() {
 
 export function getEventsForUser(userId: string): DbEvent[] {
   const rows = db.getAllSync<any>(
-<<<<<<< HEAD
     `SELECT * FROM events WHERE user_id = ? ORDER BY start_time ASC`,
-=======
-    SELECT * FROM events WHERE user_id = ? ORDER BY start_time ASC,
->>>>>>> 5902f9af03e054a3397b8bc847ed6d44a04f76a8
     [userId]
   );
 
@@ -45,11 +41,7 @@ export function getEventsForUser(userId: string): DbEvent[] {
 }
 
 export function deleteImportedEvents(userId: string) {
-<<<<<<< HEAD
   db.runSync(`DELETE FROM events WHERE user_id = ? AND source = 'imported'`, [userId]);
-=======
-  db.runSync(DELETE FROM events WHERE user_id = ? AND source = 'imported', [userId]);
->>>>>>> 5902f9af03e054a3397b8bc847ed6d44a04f76a8
 }
 
 export function insertImportedEvents(

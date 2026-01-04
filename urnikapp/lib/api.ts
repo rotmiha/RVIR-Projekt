@@ -16,7 +16,7 @@ const HOST =
     ? "10.0.2.2"
     : getDevHost() || "localhost";
 
-// ⚠️ priporočilo: uporabi HOST + port
+// ⚠️ trenutno imaš hardcoded IP – OK za zdaj
 export const BASE_URL = `http://192.168.0.102:5000`;
 
 async function request<T>(
@@ -51,7 +51,7 @@ async function request<T>(
 
 // ✅ VSE API FUNKCIJE NA ENEM MESTU
 export const api = {
-  // events
+  // legacy / generic
   getEvents: () =>
     request<{ events: any[] }>("/api/events").then((r) => r.events),
 
@@ -60,6 +60,13 @@ export const api = {
       `/api/events?userId=${encodeURIComponent(userId)}`
     ).then((r) => r.events),
 
+  // ✅ NOVO: calendar (shared + personal)
+    getCalendarEvents: (userId: string, program: string, year: string) =>
+      request<any[]>(
+        `/api/calendar-events?userId=${encodeURIComponent(userId)}&program=${encodeURIComponent(program)}&year=${encodeURIComponent(year)}`
+      ),
+
+  // events CRUD
   createEvent: (data: any) =>
     request("/api/events", {
       method: "POST",
@@ -69,6 +76,7 @@ export const api = {
   deleteEvent: (id: string) =>
     request(`/api/events/${id}`, { method: "DELETE" }),
 
+  // misc
   getConflicts: () =>
     request<any[]>("/api/conflicts"),
 };

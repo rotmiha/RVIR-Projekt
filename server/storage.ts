@@ -1,14 +1,15 @@
-import { type User, type InsertUser, type Event, type InsertEvent } from "@shared/schema";
-import { randomUUID } from "crypto";
+import "dotenv/config"
+import {lt, gt } from "drizzle-orm";
+import { users, events, type User, type InsertUser, type Event, type InsertEvent } from "@shared/schema";
+import { db } from "./db";
+import { and, eq, isNull } from "drizzle-orm";
 
 export interface IStorage {
-  // User methods
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
 
-  // Event methods
   getEvent(id: string): Promise<Event | undefined>;
   getEventsByUserId(userId: string): Promise<Event[]>;
   getEventsByUserIdAndDateRange(userId: string, startDate: Date, endDate: Date): Promise<Event[]>;
@@ -17,95 +18,126 @@ export interface IStorage {
   deleteEvent(id: string): Promise<boolean>;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<string, User>;
-  private events: Map<string, Event>;
-
-  constructor() {
-    this.users = new Map();
-    this.events = new Map();
-
-    // Create a default user for testing
-    const defaultUser: User = {
-      id: "default-user-id",
-      username: "admin",
-      email: "admin@scheduleapp.com",
-      password: "hashed_password",
-    };
-    this.users.set(defaultUser.id, defaultUser);
+export class DbStorage implements IStorage {
+  // Users
+  async getUser(id: string) {
+    const [u] = await db.select().from(users).where(eq(users.id, id));
+    return u;
   }
 
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  async getUserByUsername(username: string) {
+    const [u] = await db.select().from(users).where(eq(users.username, username));
+    return u;
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+  async getUserByEmail(email: string) {
+    const [u] = await db.select().from(users).where(eq(users.email, email));
+    return u;
   }
 
-  async getUserByEmail(email: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.email === email,
-    );
+  async createUser(user: InsertUser) {
+    const [u] = await db.insert(users).values(user).returning();
+    return u;
   }
 
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+  // Events
+  async getEvent(id: string) {
+    const [e] = await db.select().from(events).where(eq(events.id, id));
+    return e;
   }
 
-  async getEvent(id: string): Promise<Event | undefined> {
-    return this.events.get(id);
+  async getEventsByUserId(userId: string) {
+    return db.select().from(events).where(eq(events.ownerUserId, userId));
   }
 
-  async getEventsByUserId(userId: string): Promise<Event[]> {
-    return Array.from(this.events.values()).filter(
-      (event) => event.userId === userId,
-    );
+  async getEventsByUserIdAndDateRange(userId: string, startDate: Date, endDate: Date) {
+    return db
+      .select()
+      .from(events)
+      .where(
+        and(
+          eq(events.ownerUserId, userId),
+          lt(events.startTime, endDate),
+          gt(events.endTime, startDate)
+        )
+      );
   }
 
-  async getEventsByUserIdAndDateRange(
-    userId: string,
-    startDate: Date,
-    endDate: Date
-  ): Promise<Event[]> {
-    return Array.from(this.events.values()).filter(
-      (event) =>
-        event.userId === userId &&
-        event.startTime < endDate &&
-        event.endTime > startDate,
-    );
+  async createEvent(event: InsertEvent) {
+    const [e] = await db.insert(events).values(event).returning();
+    return e;
   }
 
-  async createEvent(insertEvent: InsertEvent): Promise<Event> {
-    const id = randomUUID();
-    const event: Event = {
-      id,
-      ...insertEvent,
-      location: insertEvent.location ?? null,
-      description: insertEvent.description ?? null,
-      source: insertEvent.source || 'manual',
-    };
-    this.events.set(id, event);
-    return event;
+  async updateEvent(id: string, updates: Partial<InsertEvent>) {
+    const [e] = await db.update(events).set(updates).where(eq(events.id, id)).returning();
+    return e;
   }
 
-  async updateEvent(id: string, updates: Partial<InsertEvent>): Promise<Event | undefined> {
-    const event = this.events.get(id);
-    if (!event) return undefined;
-
-    const updatedEvent: Event = { ...event, ...updates };
-    this.events.set(id, updatedEvent);
-    return updatedEvent;
-  }
-
-  async deleteEvent(id: string): Promise<boolean> {
-    return this.events.delete(id);
+  async deleteEvent(id: string) {
+    await db.delete(events).where(eq(events.id, id));
+    return true;
   }
 }
 
-export const storage = new MemStorage();
+export const storage: IStorage = new DbStorage();
+
+
+// pobriši vse stare imported shared evente za program/year
+async function deleteWiseImportedEventsForSchedule(program: string, year: string) {
+  await db
+    .delete(events)
+    .where(
+      and(
+        isNull(events.ownerUserId),          // shared
+        eq(events.program, program),
+        eq(events.year, year),
+        eq(events.source, "imported")        // ali "wise" – kar uporabljaš
+      )
+    );
+}
+
+type ParsedEvent = {
+  title: string;
+  type: "study" | "personal"; // ali kar parseIcsToEvents vrne
+  startTime: Date;
+  endTime: Date;
+  location?: string | null;
+  description?: string | null;
+};
+
+// insert novih shared eventov
+async function insertImportedEventsForSchedule(program: string, year: string, parsedEvents: ParsedEvent[]) {
+  if (!parsedEvents.length) return;
+
+  await db.insert(events).values(
+    parsedEvents.map((ev) => ({
+      ownerUserId: null,          // ✅ shared
+      program,
+      year,
+      title: ev.title,
+      type: ev.type ?? "study",
+      startTime: ev.startTime,
+      endTime: ev.endTime,
+      location: ev.location ?? null,
+      description: ev.description ?? null,
+      source: "imported",
+    }))
+  );
+}
+
+// vrni schedule evente za program/year
+async function getWiseScheduleEvents(program: string, year: string) {
+  return db
+    .select()
+    .from(events)
+    .where(
+      and(
+        isNull(events.ownerUserId),
+        eq(events.program, program),
+        eq(events.year, year)
+      )
+    );
+}
+
+
+

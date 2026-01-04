@@ -11,10 +11,10 @@ import {
   View,
 } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./../lib/api";
-import { queryClient } from "./../lib/queryClient";
+import { useAuth } from "@/components/AuthProvider";
 
 type EventType = "study" | "personal";
 
@@ -44,39 +44,55 @@ function toDateString(d: Date) {
 function toTimeString(d: Date) {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
+function addMinutes(d: Date, minutes: number) {
+  return new Date(d.getTime() + minutes * 60 * 1000);
+}
 
-export function EventFormDialog({ open, onOpenChange, defaultValues }: EventFormDialogProps) {
-  const initialState: EventFormData = useMemo(
-    () => ({
+export function EventFormDialog({
+  open,
+  onOpenChange,
+  defaultValues,
+}: EventFormDialogProps) {
+  const { user } = useAuth();
+  const userId = user?.id;
+
+  const queryClient = useQueryClient();
+
+  const initialState: EventFormData = useMemo(() => {
+    const now = new Date();
+    const defaultStart = new Date(now);
+    defaultStart.setHours(9, 0, 0, 0);
+    const defaultEnd = addMinutes(defaultStart, 60);
+
+    return {
       title: defaultValues?.title ?? "",
       type: defaultValues?.type ?? "personal",
-      startDate: defaultValues?.startDate ?? "",
-      startTime: defaultValues?.startTime ?? "",
-      endDate: defaultValues?.endDate ?? "",
-      endTime: defaultValues?.endTime ?? "",
+      startDate: defaultValues?.startDate ?? toDateString(defaultStart),
+      startTime: defaultValues?.startTime ?? toTimeString(defaultStart),
+      endDate: defaultValues?.endDate ?? toDateString(defaultEnd),
+      endTime: defaultValues?.endTime ?? toTimeString(defaultEnd),
       location: defaultValues?.location ?? "",
       description: defaultValues?.description ?? "",
-    }),
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [open] // ko odpreš dialog, naj “pobere” defaultValues
-  );
+  }, [open]);
 
   const [formData, setFormData] = useState<EventFormData>(initialState);
 
-
-  useEffect(() => {
-  if (formData.startDate) {
-    setFormData((p) => ({
-      ...p,
-      endDate: p.startDate,
-    }));
-  }
-}, [formData.startDate]);
-
-
+  // Ko se dialog odpre, naloži initialState
   useEffect(() => {
     if (open) setFormData(initialState);
   }, [open, initialState]);
+
+  // Če uporabnik spremeni startDate, uskladi endDate (da ostane isti dan)
+  useEffect(() => {
+    if (!open) return;
+    setFormData((p) => {
+      if (!p.startDate) return p;
+      if (p.endDate === p.startDate) return p;
+      return { ...p, endDate: p.startDate };
+    });
+  }, [open, formData.startDate]);
 
   // native picker state
   const [picker, setPicker] = useState<null | {
@@ -86,87 +102,129 @@ export function EventFormDialog({ open, onOpenChange, defaultValues }: EventForm
   }>(null);
 
   const createEventMutation = useMutation({
-    mutationFn: (data: {
+    mutationFn: async (data: {
+      userId: string;
       title: string;
       type: EventType;
-      startTime: string;
-      endTime: string;
+      startTime: Number;
+      endTime: Number;
       location?: string;
       description?: string;
-    }) => api.createEvent(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/events"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/conflicts"] });
+    }) => {
+      // če tvoj backend userId ne rabi, lahko ga ignorira
+      return api.createEvent(data);
+    },
+    onSuccess: async () => {
+      // ✅ Ključno: invalidiraj točno tisti key, ki ga uporablja CalendarScreen
+      if (userId) {
+        await queryClient.invalidateQueries({ queryKey: ["/api/events", userId] });
+        await queryClient.refetchQueries({ queryKey: ["/api/events", userId] });
+      } else {
+        // fallback
+        await queryClient.invalidateQueries({ queryKey: ["/api/events"] });
+      }
+
+      await queryClient.invalidateQueries({ queryKey: ["/api/conflicts"] });
 
       Alert.alert("Dogodek ustvarjen", "Dogodek je bil uspešno dodan v vaš urnik.");
+  
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar-events", userId] });
       onOpenChange(false);
 
-      setFormData({
-        title: "",
-        type: "personal",
-        startDate: "",
-        startTime: "",
-        endDate: "",
-        endTime: "",
-        location: "",
-        description: "",
-      });
+      setFormData(initialState);
     },
     onError: (error: any) => {
-      Alert.alert("Error", error?.message ?? "Failed to create event. Please try again.");
+      Alert.alert("Napaka", error?.message ?? "Failed to create event. Please try again.");
     },
   });
 
   const close = () => onOpenChange(false);
 
   const submit = () => {
-    if (!formData.title || !formData.startDate || !formData.startTime || !formData.endDate || !formData.endTime) {
-      Alert.alert("Validation Error", "Please fill in all required fields.");
-      return;
+    try {
+      if (!userId) {
+        Alert.alert("Napaka", "Ni prijavljenega uporabnika.");
+        return;
+      }
+
+      if (!formData.title.trim()) {
+        Alert.alert("Validation Error", "Prosim vnesi naslov dogodka.");
+        return;
+      }
+
+      if (!formData.startDate || !formData.startTime || !formData.endDate || !formData.endTime) {
+        Alert.alert("Validation Error", "Prosim izberi datum in čas začetka/konca.");
+        return;
+      }
+
+      const start = new Date(`${formData.startDate}T${formData.startTime}:00`);
+      const end = new Date(`${formData.endDate}T${formData.endTime}:00`);
+
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        Alert.alert("Napaka", "Neveljaven datum/čas.");
+        return;
+      }
+
+      if (end.getTime() <= start.getTime()) {
+        Alert.alert("Napaka", "Čas konca mora biti po času začetka.");
+        return;
+      }
+
+      createEventMutation.mutate({
+        userId,
+        title: formData.title.trim(),
+        type: formData.type,
+        startTime: start.getTime(), // ✅
+        endTime: end.getTime(),     // ✅
+        location: formData.location.trim() || undefined,
+        description: formData.description.trim() || undefined,
+      });
+    } catch (e: any) {
+      Alert.alert("Napaka", e?.message ?? "Neznana napaka.");
     }
-
-    const startISO = new Date(`${formData.startDate}T${formData.startTime}`).toISOString();
-    const endISO = new Date(`${formData.endDate}T${formData.endTime}`).toISOString();
-
-    createEventMutation.mutate({
-      title: formData.title,
-      type: formData.type,
-      startTime: startISO,
-      endTime: endISO,
-      location: formData.location.trim() ? formData.location.trim() : undefined,
-      description: formData.description.trim() ? formData.description.trim() : undefined,
-    });
   };
 
   const openPicker = (field: "start" | "end", mode: "date" | "time") => {
     const base =
       field === "start"
-        ? new Date(`${formData.startDate || toDateString(new Date())}T${formData.startTime || "09:00"}`)
-        : new Date(`${formData.endDate || toDateString(new Date())}T${formData.endTime || "10:00"}`);
+        ? new Date(`${formData.startDate}T${formData.startTime}:00`)
+        : new Date(`${formData.endDate}T${formData.endTime}:00`);
 
     setPicker({ field, mode, value: isNaN(base.getTime()) ? new Date() : base });
   };
 
-  const onPick = (event: any, selected?: Date) => {
-    // Android: dismiss event when canceled
-    if (Platform.OS === "android") {
-      setPicker(null);
-    }
+  const onPick = (_evt: any, selected?: Date) => {
+    if (Platform.OS === "android") setPicker(null);
     if (!selected) return;
 
     const field = picker?.field;
     const mode = picker?.mode;
-    if (!field || !mode) return; 
+    if (!field || !mode) return;
 
-    if (field === "start") { 
-      if (mode === "date") setFormData((p) => ({ ...p, startDate: toDateString(selected) }));
-      else setFormData((p) => ({ ...p, startTime: toTimeString(selected) }));
-    } else {
-      if (mode === "date") setFormData((p) => ({ ...p, endDate: toDateString(selected) }));
-      else setFormData((p) => ({ ...p, endTime: toTimeString(selected) }));
-    }
+    setFormData((p) => {
+      let next = { ...p };
 
-    // iOS: ostane odprt dokler ne zapreš – tu ga lahko zapreš takoj
+      if (field === "start") {
+        if (mode === "date") next.startDate = toDateString(selected);
+        else next.startTime = toTimeString(selected);
+
+        // ✅ če end manjka ali je <= start, ga avtomatsko prestavi na +60min (isti dan)
+        const start = new Date(`${next.startDate}T${next.startTime}:00`);
+        const end = new Date(`${next.endDate}T${next.endTime}:00`);
+
+        if (isNaN(end.getTime()) || end.getTime() <= start.getTime()) {
+          const newEnd = addMinutes(start, 60);
+          next.endDate = toDateString(newEnd);
+          next.endTime = toTimeString(newEnd);
+        }
+      } else {
+        if (mode === "date") next.endDate = toDateString(selected);
+        else next.endTime = toTimeString(selected);
+      }
+
+      return next;
+    });
+
     if (Platform.OS === "ios") setPicker(null);
   };
 
@@ -195,13 +253,17 @@ export function EventFormDialog({ open, onOpenChange, defaultValues }: EventForm
               onPress={() => setFormData((p) => ({ ...p, type: "study" }))}
               style={[styles.segmentBtn, formData.type === "study" && styles.segmentBtnActive]}
             >
-              <Text style={[styles.segmentText, formData.type === "study" && styles.segmentTextActive]}>Učenje</Text>
+              <Text style={[styles.segmentText, formData.type === "study" && styles.segmentTextActive]}>
+                Učenje
+              </Text>
             </Pressable>
             <Pressable
               onPress={() => setFormData((p) => ({ ...p, type: "personal" }))}
               style={[styles.segmentBtn, formData.type === "personal" && styles.segmentBtnActive]}
             >
-              <Text style={[styles.segmentText, formData.type === "personal" && styles.segmentTextActive]}>Osebni</Text>
+              <Text style={[styles.segmentText, formData.type === "personal" && styles.segmentTextActive]}>
+                Osebni
+              </Text>
             </Pressable>
           </View>
 
@@ -212,12 +274,10 @@ export function EventFormDialog({ open, onOpenChange, defaultValues }: EventForm
                 <Text style={styles.pickerBtnText}>{formData.startDate || "Izberi datum"}</Text>
               </Pressable>
             </View>
-
           </View>
 
-
-           <View style={styles.row}>
-           <View style={{ flex: 1 }}>
+          <View style={styles.row}>
+            <View style={{ flex: 1 }}>
               <Text style={styles.label}>Čas začetka *</Text>
               <Pressable onPress={() => openPicker("start", "time")} style={styles.pickerBtn}>
                 <Text style={styles.pickerBtnText}>{formData.startTime || "Izberi čas"}</Text>
