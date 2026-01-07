@@ -1,4 +1,4 @@
-const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://192.168.0.102:5000";
+const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://164.8.207.68:5000";
 
 type ImportWiseResponse = {
   imported: number;

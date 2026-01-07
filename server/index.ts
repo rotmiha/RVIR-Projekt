@@ -79,90 +79,98 @@ app.get("/api/ping", (_req, res) => {
 const wiseImportLocks = new Map<string, boolean>();
 
 app.post("/api/import/wise", async (req, res) => {
+  console.log("✅ HIT /api/import/wise", req.body);
 
-     console.log("✅ HIT /api/import/wise", req.body);
+  const { programValue, yearValue } = req.body ?? {};
+  if (!programValue || !yearValue) {
+    return res.status(400).json({ message: "Missing programValue / yearValue" });
+  }
 
-    const { programValue, yearValue } = req.body ?? {};
-    if (!programValue || !yearValue) {
-      return res.status(400).json({ message: "Missing programValue / yearValue" });
-    }
+  const program = String(programValue); // label ali value
+  const year = String(yearValue);       // "1" | "2" | "3"
+  const lockKey = `${program}||${year}`;
 
-
-    const program = String(programValue);
-    const year = String(yearValue);
-    const lockKey = `${program}||${year}`;
-
-    if (wiseImportLocks.get(lockKey)) {
-      return res.status(409).json({
-        status: "busy",
-        message: "WISE import že teče za ta program/letnik.",
-      });
-    }
-
-    wiseImportLocks.set(lockKey, true);
-
+  if (wiseImportLocks.get(lockKey)) {
+    return res.status(409).json({
+      status: "busy",
+      message: "WISE import že teče za ta program/letnik.",
+    });
+  }
+  wiseImportLocks.set(lockKey, true);
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
 
-  // 🔍 DEBUG: store last N network events
   const lastReq: Array<{ method: string; url: string }> = [];
-  const lastResp: Array<{
-    status: number;
-    url: string;
-    ct?: string;
-    cd?: string;
-  }> = [];
+  const lastResp: Array<{ status: number; url: string; ct?: string; cd?: string }> = [];
 
-  // 🔍 GLOBAL DEBUG HOOKS
-  page.on("console", (msg) =>
-    console.log("🟡 PAGE console:", msg.type(), msg.text())
-  );
+  page.on("console", (msg) => console.log("🟡 PAGE console:", msg.type(), msg.text()));
   page.on("pageerror", (err) => console.log("🔴 PAGE error:", err.message));
   page.on("request", (r) => {
-    const entry = { method: r.method(), url: r.url() };
-    lastReq.push(entry);
+    lastReq.push({ method: r.method(), url: r.url() });
     if (lastReq.length > 50) lastReq.shift();
-    console.log("➡️ REQ:", entry.method, entry.url);
   });
+
   page.on("response", (r) => {
     const h = r.headers();
-    const entry = {
-      status: r.status(),
-      url: r.url(),
-      ct: h["content-type"],
-      cd: h["content-disposition"],
-    };
+    const entry = { status: r.status(), url: r.url(), ct: h["content-type"], cd: h["content-disposition"] };
     lastResp.push(entry);
     if (lastResp.length > 50) lastResp.shift();
 
     const ct = (entry.ct ?? "").toLowerCase();
     const cd = (entry.cd ?? "").toLowerCase();
     const url = entry.url.toLowerCase();
-
-    // log only interesting responses
-    if (
-      ct.includes("calendar") ||
-      cd.includes("attachment") ||
-      cd.includes(".ics") ||
-      url.includes("dynamiccontent") ||
-      url.includes("ical")
-    ) {
-      console.log(
-        "⬅️ RESP IMPORTANT:",
-        entry.status,
-        entry.url,
-        "CT=",
-        entry.ct,
-        "CD=",
-        entry.cd
-      );
-    }
   });
-  page.on("requestfailed", (r) =>
-    console.log("❌ REQ FAILED:", r.url(), r.failure()?.errorText)
-  );
+
+  page.on("requestfailed", (r) => console.log("❌ REQ FAILED:", r.url(), r.failure()?.errorText));
+
+  const dumpSelect = async (css: string) => {
+    const data = await page.evaluate((sel) => {
+      const el = document.querySelector(sel) as HTMLSelectElement | null;
+      if (!el) return { exists: false };
+      return {
+        exists: true,
+        value: el.value,
+        selectedText: el.selectedOptions[0]?.text ?? null,
+        optionsCount: el.options.length,
+      };
+    }, css);
+  };
+
+    const byId = (id: string) => page.locator(`[id="${id}"]`);
+    const pickPrimefacesSelectOneMenuByText = async (wrapperId: string, expectedText: string) => {
+      const wrapper = byId(wrapperId);
+      await wrapper.waitFor({ state: "visible", timeout: 30000 });
+
+      const trigger = wrapper.locator(".ui-selectonemenu-trigger");
+      const panel = byId(`${wrapperId}_panel`);
+
+      await trigger.click();
+      await panel.waitFor({ state: "visible", timeout: 30000 });
+
+      // PrimeFaces items are <li class="ui-selectonemenu-item" data-label="...">
+      const byDataLabel = panel.locator(`li.ui-selectonemenu-item[data-label="${expectedText}"]`).first();
+      if (await byDataLabel.count()) {
+        await byDataLabel.click();
+      } else {
+        await panel.locator("li.ui-selectonemenu-item").filter({ hasText: expectedText }).first().click();
+      }
+
+      // wait label update
+      await page.waitForFunction(
+        ({ id, text }) => {
+          const el = document.getElementById(id + "_label");
+          return !!el && (el.textContent ?? "").trim() === text;
+        },
+        { id: wrapperId, text: expectedText },
+        { timeout: 30000 }
+      );
+
+      await page.waitForLoadState("networkidle").catch(() => null);
+      await page.waitForTimeout(300);
+
+  };
 
   try {
     console.log("🌍 goto WISE");
@@ -170,206 +178,145 @@ app.post("/api/import/wise", async (req, res) => {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
-    console.log("✅ page loaded");
 
-    // PROGRAM
-    console.log("🎓 selecting program", programValue);
-    const programSel = page.locator('select[id="form:j_idt175_input"]');
-    await programSel.waitFor({ state: "visible", timeout: 30000 });
-    await programSel.selectOption(String(programValue));
-    await programSel.dispatchEvent("change");
-    await page.waitForTimeout(700);
+    console.log("🎓 selecting program", program);
 
-    // LETNIK
-    console.log("📅 selecting year", yearValue);
-    const yearSel = page.locator('select[id="form:j_idt179_input"]');
-    await yearSel.waitFor({ state: "visible", timeout: 30000 });
-    await yearSel.selectOption(String(yearValue));
-    await yearSel.dispatchEvent("change");
-    await page.waitForTimeout(700);
+    const programSelectCss = 'select[id="form:j_idt183_input"]';
+    await page.locator(programSelectCss).waitFor({ state: "attached", timeout: 30000 });
 
-    // BUTTON
-    const btn = page.locator('button:has-text("iCal-vse")').first();
-    console.log("🔘 waiting for iCal button");
-    await btn.waitFor({ state: "visible", timeout: 30000 });
+    let programLabel = program;
+    if (/^\d+$/.test(program)) {
+      programLabel = await page.evaluate(({ sel, val }) => {
+        const el = document.querySelector(sel) as HTMLSelectElement | null;
+        if (!el) return val;
+        const opt = Array.from(el.options).find(o => o.value === val);
+        return opt?.text ?? val;
+      }, { sel: programSelectCss, val: program });
+    }
+
+    await pickPrimefacesSelectOneMenuByText("form:j_idt183", programLabel);
+    await dumpSelect(programSelectCss);
+
+    // ===== LETNIK =====
+    console.log("📅 selecting year (PrimeFaces)", year);
+
+    const yearSelectCss = 'select[id="form:j_idt187_input"]';
+    await page.locator(yearSelectCss).waitFor({ state: "attached", timeout: 30000 });
+
+    await pickPrimefacesSelectOneMenuByText("form:j_idt187", year);
+
+    // must reflect in hidden <select>
+    await page.waitForFunction(
+      ({ sel, val }) => {
+        const el = document.querySelector(sel) as HTMLSelectElement | null;
+        return !!el && el.value === val;
+      },
+      { sel: yearSelectCss, val: year },
+      { timeout: 30000 }
+    );
+    await dumpSelect(yearSelectCss);
+
+    const dirSelectCss = 'select[id="form:j_idt191_input"]';
+    await page.waitForFunction(
+      (sel) => {
+        const el = document.querySelector(sel) as HTMLSelectElement | null;
+        return !!el && el.options.length >= 2;
+      },
+      dirSelectCss,
+      { timeout: 30000 }
+    );
+    await dumpSelect(dirSelectCss);
+
+    await page.waitForTimeout(500);
+    const firstGroup = page.locator('[id="form:groupVar_data"] tr.ui-datatable-selectable').first();
+    if (await firstGroup.count()) {
+      await firstGroup.click().catch(() => null);
+      await page.waitForTimeout(300);
+    }
+
+    const icalLink = page.locator('a:has(button:has-text("iCal-vse"))').first();
+    const icalBtn = page.locator('button:has-text("iCal-vse")').first();
+    if (await icalLink.count()) await icalLink.waitFor({ state: "visible", timeout: 30000 });
+    else await icalBtn.waitFor({ state: "visible", timeout: 30000 });
+
+    const downloadP = page.waitForEvent("download", { timeout: 90000 }).catch(() => null);
+    const attachRespP = page.waitForResponse(
+      (r) => {
+        const h = r.headers();
+        return (
+          (h["content-type"] ?? "").toLowerCase().includes("calendar") ||
+          (h["content-disposition"] ?? "").toLowerCase().includes("attachment") ||
+          r.url().toLowerCase().includes("ical")
+        );
+      },
+      { timeout: 90000 }
+    ).catch(() => null);
 
     console.log("🖱️ clicking iCal-vse");
-
-    // (A) classic download event
-    const downloadP = page
-      .waitForEvent("download", { timeout: 90000 })
-      .catch(() => null);
-
-    // (B) direct response with attachment / text/calendar
-    const attachRespP = page
-      .waitForResponse(
-        (r) => {
-          const h = r.headers();
-          const ct = (h["content-type"] ?? "").toLowerCase();
-          const cd = (h["content-disposition"] ?? "").toLowerCase();
-          const url = r.url().toLowerCase();
-          return (
-            ct.includes("calendar") ||
-            cd.includes("attachment") ||
-            cd.includes(".ics") ||
-            url.includes("ical")
-          );
-        },
-        { timeout: 90000 }
-      )
-      .catch(() => null);
-
-    // (C) PrimeFaces AJAX response (often contains dynamiccontent URL)
-    const ajaxHomeP = page
-      .waitForResponse(
-        (r) =>
-          r.url().includes("/pages/home.jsf") && r.request().method() === "POST",
-        { timeout: 30000 }
-      )
-      .catch(() => null);
-
-    await btn.click();
-
-    console.log("⏳ waiting for download/attachment/ajax...");
+    if (await icalLink.count()) await icalLink.click();
+    else await icalBtn.click();
 
     const download = await downloadP;
     const attachResp = await attachRespP;
 
     let icsText: string | null = null;
 
-    // A) download event path -> file
     if (download) {
-      console.log("✅ GOT DOWNLOAD EVENT:", await download.suggestedFilename());
-      const path = await download.path();
-      if (!path) throw new Error("Download had no path");
-
+      const p = await download.path();
+      if (!p) throw new Error("Download had no path");
       const fs = await import("node:fs/promises");
-      icsText = await fs.readFile(path, "utf8");
-    }
-
-    // B) attachment/calendar response -> body
-    if (!icsText && attachResp) {
-      console.log(
-        "✅ GOT ATTACHMENT RESPONSE:",
-        attachResp.status(),
-        attachResp.url()
-      );
+      icsText = await fs.readFile(p, "utf8");
+    } else if (attachResp) {
       icsText = await attachResp.text();
     }
 
-    // C) ajax response -> find dynamiccontent link -> fetch it with same session
     if (!icsText) {
-      const ajaxResp = await ajaxHomeP;
-      if (ajaxResp) {
-        const ajaxText = await ajaxResp.text();
-        console.log("🧩 AJAX home.jsf preview:", ajaxText.slice(0, 500));
-
-        // try to find PrimeFaces dynamiccontent URL
-        const m =
-          ajaxText.match(
-            /(\/wtt_um_feri\/javax\.faces\.resource\/dynamiccontent\.xhtml[^"'<>\s]+)/i
-          ) ||
-          ajaxText.match(
-            /(\/javax\.faces\.resource\/dynamiccontent\.xhtml[^"'<>\s]+)/i
-          );
-
-        if (m?.[1]) {
-          const dynUrl = new URL(m[1], "https://wise-tt.com").toString();
-          console.log("🎯 FOUND dynamiccontent:", dynUrl);
-
-          const r = await context.request.get(dynUrl);
-          const t = await r.text();
-
-          console.log("📄 dynamiccontent CT:", r.headers()["content-type"]);
-          console.log("📄 dynamiccontent preview:", t.slice(0, 200));
-
-          icsText = t;
-        } else {
-          console.log("❗ No dynamiccontent link found in AJAX response.");
-        }
-      } else {
-        console.log("❗ No AJAX /pages/home.jsf response captured (timeout).");
-      }
+      throw new Error("No ICS detected");
     }
-
-    // If still nothing -> dump last network
-    if (!icsText) {
-      console.log("🧯 LAST 20 REQ:", lastReq.slice(-20));
-      console.log("🧯 LAST 20 RESP:", lastResp.slice(-20));
-      throw new Error(
-        "No ICS detected (no download event, no attachment response, no dynamiccontent)."
-      );
-    }
-
-    console.log("📄 ICS length:", icsText.length);
-    console.log("📄 ICS preview:", icsText.slice(0, 250));
 
     if (!icsText.includes("BEGIN:VCALENDAR")) {
-      console.log("📄 NOT ICS START:", icsText.slice(0, 300));
-      throw new Error("Received content but it's not ICS (missing BEGIN:VCALENDAR)");
+      throw new Error("Downloaded content is not ICS");
     }
 
     const parsedEvents = await parseIcsToEvents(icsText);
-    console.log("📊 parsed events:", parsedEvents.length);
 
-      const program = String(programValue);
-      const year = String(yearValue);
-
-      const existing = await getWiseScheduleEvents(program, year);
-
-      // če je enako, nič ne delaj
-      if (sameEventSet(program, year, parsedEvents, existing)) {
-        res.setHeader("X-WISE-ICAL", "1");
-        return res.json({
-          status: "unchanged",
-          message: "Urnik je že posodobljen (ni sprememb).",
-          imported: 0,
-          events: existing,
-        });
-      }
-
-      // drugače posodobi (replace)
-      await deleteWiseImportedEventsForSchedule(program, year);
-      await insertImportedEventsForSchedule(program, year, parsedEvents);
-
-      const wiseEvents = await getWiseScheduleEvents(program, year);
+    const existing = await getWiseScheduleEvents(programLabel, year);
+    if (sameEventSet(programLabel, year, parsedEvents, existing)) {
       res.setHeader("X-WISE-ICAL", "1");
-      return res.json({
-        status: "updated",
-        message: "Urnik posodobljen.",
-        imported: parsedEvents.length,
-        events: wiseEvents,
-      });
+      return res.json({ status: "unchanged", imported: 0, events: existing });
+    }
 
+    await deleteWiseImportedEventsForSchedule(programLabel, year);
+    await insertImportedEventsForSchedule(programLabel, year, parsedEvents);
+
+    const wiseEvents = await getWiseScheduleEvents(programLabel, year);
+    res.setHeader("X-WISE-ICAL", "1");
+    return res.json({ status: "updated", imported: parsedEvents.length, events: wiseEvents });
   } catch (e: any) {
-    console.error("❌ WISE IMPORT ERROR:", e);
-    return res.status(500).json({
-      message: e?.message ?? String(e),
-    });
+    return res.status(500).json({ message: e?.message ?? String(e) });
   } finally {
+    wiseImportLocks.delete(lockKey);
     await context.close();
     await browser.close();
   }
 });
 
-
-// pobriši vse stare imported shared evente za program/year
 async function deleteWiseImportedEventsForSchedule(program: string, year: string) {
   await db
     .delete(events)
     .where(
       and(
-        isNull(events.ownerUserId),          // shared
+        isNull(events.ownerUserId),         
         eq(events.program, program),
         eq(events.year, year),
-        eq(events.source, "imported")        // ali "wise" – kar uporabljaš
+        eq(events.source, "imported")        
       )
     );
 }
 
 type ParsedEvent = {
   title: string;
-  type?: "study" | "personal"; // ali kar parseIcsToEvents vrne
+  type?: "study" | "personal"; 
   startTime: Date;
   endTime: Date;
   location?: string | null;

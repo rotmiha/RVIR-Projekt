@@ -1,6 +1,6 @@
 import { Tabs, Redirect } from "expo-router";
 import React from "react";
-import { MaterialIcons } from "@expo/vector-icons";
+import { AntDesign, MaterialIcons } from "@expo/vector-icons";
 import { useAuth } from "@/components/AuthProvider";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -64,6 +64,16 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <MaterialIcons name="calendar-today" size={28} color={color} />,
         }}
       />
+      <Tabs.Screen
+        name="conflicts"
+        options={{
+          title: "Conflikti",
+          tabBarIcon: ({ color }) => (
+            <AntDesign name="exclamation" size={24} color={color} />
+          ),
+        }}
+      />
+
       <Tabs.Screen
         name="events"
         options={{

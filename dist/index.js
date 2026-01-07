@@ -56,7 +56,6 @@ var insertUserSchema = createInsertSchema(users).omit({
 var insertEventSchema = createInsertSchema(events).omit({ id: true }).extend({
   type: z.enum(["study", "personal"]),
   source: z.enum(["manual", "imported"]).optional(),
-  // ✅ KLJUČNO: sprejmi JSON (string/number) in pretvori v Date
   startTime: z.coerce.date(),
   endTime: z.coerce.date()
 }).refine((d) => d.endTime > d.startTime, {
@@ -66,282 +65,6 @@ var insertEventSchema = createInsertSchema(events).omit({ id: true }).extend({
 
 // server/routes.ts
 import multer from "multer";
-
-// server/services/email.ts
-var EmailService = class {
-  apiKey;
-  senderEmail;
-  senderName;
-  constructor() {
-    this.apiKey = process.env.BREVO_API_KEY || "";
-    this.senderEmail = process.env.BREVO_SENDER_EMAIL || "noreply@scheduleapp.com";
-    this.senderName = process.env.BREVO_SENDER_NAME || "Schedule Manager";
-  }
-  async sendEmail({ to, subject, htmlContent }) {
-    if (!this.apiKey) {
-      console.warn("Brevo API key not configured. Email not sent.");
-      return false;
-    }
-    try {
-      const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: {
-          "accept": "application/json",
-          "api-key": this.apiKey,
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          sender: {
-            name: this.senderName,
-            email: this.senderEmail
-          },
-          to: [{ email: to }],
-          subject,
-          htmlContent
-        })
-      });
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Brevo API error:", errorText);
-        return false;
-      }
-      console.log(`Email sent successfully to ${to}`);
-      return true;
-    } catch (error) {
-      console.error("Error sending email:", error);
-      return false;
-    }
-  }
-  async sendConflictNotification({ to, event1, event2 }) {
-    const formatTime = (date) => {
-      return date.toLocaleString("en-US", {
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit"
-      });
-    };
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background-color: #ef4444; color: white; padding: 20px; text-align: center; }
-            .content { background-color: #f9fafb; padding: 20px; margin-top: 20px; }
-            .event { background-color: white; border-left: 4px solid #3b82f6; padding: 15px; margin: 10px 0; }
-            .footer { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; font-size: 0.9em; color: #6b7280; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>\u26A0\uFE0F Schedule Conflict Detected</h1>
-            </div>
-            <div class="content">
-              <p>We've detected a scheduling conflict between the following events:</p>
-              
-              <div class="event">
-                <h3>${event1.title}</h3>
-                <p><strong>Time:</strong> ${formatTime(event1.startTime)} - ${formatTime(event1.endTime)}</p>
-                ${event1.location ? `<p><strong>Location:</strong> ${event1.location}</p>` : ""}
-              </div>
-
-              <div class="event">
-                <h3>${event2.title}</h3>
-                <p><strong>Time:</strong> ${formatTime(event2.startTime)} - ${formatTime(event2.endTime)}</p>
-                ${event2.location ? `<p><strong>Location:</strong> ${event2.location}</p>` : ""}
-              </div>
-
-              <p><strong>Note:</strong> If one of these is a study event, it will automatically take priority over personal activities.</p>
-              <p>Please review your schedule and resolve this conflict.</p>
-            </div>
-            <div class="footer">
-              <p>This is an automated notification from Schedule Manager.</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
-    return this.sendEmail({
-      to,
-      subject: "\u26A0\uFE0F Schedule Conflict Detected",
-      htmlContent
-    });
-  }
-  async sendUpcomingEventNotification({
-    to,
-    eventTitle,
-    startTime,
-    endTime,
-    location,
-    minutesBefore
-  }) {
-    const formatTime = (date) => {
-      return date.toLocaleString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit"
-      });
-    };
-    const formatDate = (date) => {
-      return date.toLocaleString("en-US", {
-        weekday: "long",
-        month: "long",
-        day: "numeric"
-      });
-    };
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background-color: #3b82f6; color: white; padding: 20px; text-align: center; }
-            .content { background-color: #f9fafb; padding: 20px; margin-top: 20px; }
-            .event-details { background-color: white; padding: 20px; margin: 15px 0; border-radius: 8px; }
-            .time { font-size: 1.5em; font-weight: bold; color: #3b82f6; }
-            .footer { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; font-size: 0.9em; color: #6b7280; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>\u{1F4C5} Upcoming Event Reminder</h1>
-            </div>
-            <div class="content">
-              <p>Your event starts in <strong>${minutesBefore} minutes</strong>!</p>
-              
-              <div class="event-details">
-                <h2>${eventTitle}</h2>
-                <p class="time">${formatTime(startTime)} - ${formatTime(endTime)}</p>
-                <p>${formatDate(startTime)}</p>
-                ${location ? `<p><strong>\u{1F4CD} Location:</strong> ${location}</p>` : ""}
-              </div>
-
-              <p>Make sure you're prepared and on your way!</p>
-            </div>
-            <div class="footer">
-              <p>This is an automated reminder from Schedule Manager.</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
-    return this.sendEmail({
-      to,
-      subject: `\u{1F4C5} Reminder: ${eventTitle} starts in ${minutesBefore} minutes`,
-      htmlContent
-    });
-  }
-  async sendDailyDigest(to, events2) {
-    if (events2.length === 0) {
-      return true;
-    }
-    const formatTime = (date) => {
-      return date.toLocaleString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit"
-      });
-    };
-    const eventsList = events2.map((event) => {
-      const typeColor = event.type === "study" ? "#3b82f6" : "#8b5cf6";
-      return `
-          <div style="background-color: white; border-left: 4px solid ${typeColor}; padding: 15px; margin: 10px 0;">
-            <h3 style="margin: 0 0 10px 0;">${event.title}</h3>
-            <p style="margin: 5px 0;"><strong>\u23F0 Time:</strong> ${formatTime(event.startTime)} - ${formatTime(event.endTime)}</p>
-            ${event.location ? `<p style="margin: 5px 0;"><strong>\u{1F4CD} Location:</strong> ${event.location}</p>` : ""}
-            <p style="margin: 5px 0;"><strong>Type:</strong> ${event.type === "study" ? "\u{1F4DA} Study" : "\u2B50 Personal"}</p>
-          </div>
-        `;
-    }).join("");
-    const today = (/* @__PURE__ */ new Date()).toLocaleString("en-US", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric"
-    });
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background-color: #3b82f6; color: white; padding: 20px; text-align: center; }
-            .content { background-color: #f9fafb; padding: 20px; margin-top: 20px; }
-            .footer { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; font-size: 0.9em; color: #6b7280; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>\u{1F4C5} Your Daily Schedule</h1>
-              <p style="margin: 10px 0 0 0;">${today}</p>
-            </div>
-            <div class="content">
-              <p>Good morning! Here's your schedule for today:</p>
-              <p><strong>${events2.length} ${events2.length === 1 ? "event" : "events"} scheduled</strong></p>
-              ${eventsList}
-            </div>
-            <div class="footer">
-              <p>Have a productive day!</p>
-              <p>This is an automated digest from Schedule Manager.</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
-    return this.sendEmail({
-      to,
-      subject: `\u{1F4C5} Your Schedule for ${today}`,
-      htmlContent
-    });
-  }
-  async sendTestEmail(to) {
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background-color: #3b82f6; color: white; padding: 20px; text-align: center; }
-            .content { background-color: #f9fafb; padding: 20px; margin-top: 20px; text-align: center; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>\u2705 Email Configuration Test</h1>
-            </div>
-            <div class="content">
-              <h2>Success!</h2>
-              <p>Your email notifications are properly configured.</p>
-              <p>You will now receive notifications for:</p>
-              <ul style="text-align: left; display: inline-block;">
-                <li>Scheduling conflicts</li>
-                <li>Upcoming events</li>
-                <li>Daily schedule digests</li>
-              </ul>
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
-    return this.sendEmail({
-      to,
-      subject: "\u2705 Schedule Manager - Test Email",
-      htmlContent
-    });
-  }
-};
-var emailService = new EmailService();
-
-// server/routes.ts
 import bcrypt from "bcryptjs";
 
 // server/db.ts
@@ -357,11 +80,9 @@ if (!ssss) {
 }
 var pool = new Pool({ connectionString: ssss });
 var db = drizzle({ client: pool, schema: schema_exports });
-console.log("SCHEMA KEYS:", Object.keys(schema_exports));
-console.log("EVENTS TABLE:", events);
 
 // server/routes.ts
-import { and as and2, or, eq as eq2, sql as sql2 } from "drizzle-orm";
+import { and as and2, or, eq as eq2, isNull as isNull2, sql as sql2, asc } from "drizzle-orm";
 
 // server/storage.ts
 import "dotenv/config";
@@ -434,6 +155,26 @@ async function registerRoutes(app2) {
       return res.status(500).json({ message: e?.message ?? String(e) });
     }
   };
+  app2.get("/api/events/personal-or-manual", async (req, res) => {
+    try {
+      const userId = String(req.query.userId ?? "");
+      if (!userId) return res.status(400).json({ message: "Missing userId" });
+      const rows = await db.select().from(events).where(
+        and2(
+          eq2(events.ownerUserId, userId),
+          or(
+            eq2(events.type, "personal"),
+            eq2(events.source, "manual"),
+            isNull2(events.source)
+          )
+        )
+      ).orderBy(asc(events.startTime));
+      return res.json({ events: rows });
+    } catch (e) {
+      console.error("GET /api/events/personal-or-manual error:", e);
+      return res.status(500).json({ message: e?.message ?? String(e) });
+    }
+  });
   app2.get("/api/events", getEventsForUser);
   app2.get("/api/events/range", async (req, res) => {
     try {
@@ -469,266 +210,74 @@ async function registerRoutes(app2) {
       res.status(500).json({ error: "Failed to fetch event" });
     }
   });
-  async function parseIcsToEvents2(icsText) {
-    const ical = await import("node-ical");
-    const parsed = ical.parseICS(icsText);
-    const events2 = [];
-    for (const k in parsed) {
-      const ev = parsed[k];
-      if (ev?.type === "VEVENT") {
-        events2.push({
-          title: ev.summary || "Untitled Event",
-          startTime: ev.start,
-          endTime: ev.end,
-          location: ev.location || null,
-          description: ev.description || null
-        });
-      }
-    }
-    return events2;
-  }
-  async function deleteWiseImportedEvents(userId) {
-    const all = await storage.getEventsByUserId(userId);
-    const wiseOnes = all.filter((e) => e.source === "wise");
-    await Promise.all(wiseOnes.map((e) => storage.deleteEvent(e.id)));
-  }
-  app2.post("/api/import/wise", async (req, res) => {
-    console.log("\u2705 HIT /api/import/wise", req.body);
-    const { programValue, yearValue } = req.body ?? {};
-    const userId = "default-user-id";
-    if (!programValue || !yearValue) {
-      return res.status(400).json({
-        message: "Missing programValue / yearValue"
-      });
-    }
-    const { chromium: chromium2 } = await import("playwright");
-    const browser = await chromium2.launch({ headless: true });
-    const context = await browser.newContext({ acceptDownloads: true });
-    const page = await context.newPage();
+  app2.get("/api/conflicts", async (req, res) => {
     try {
-      await page.goto("https://wise-tt.com/wtt_um_feri/index.jsp", {
-        waitUntil: "domcontentloaded",
-        timeout: 6e4
-      });
-      await page.selectOption('select[id="form:j_idt175_input"]', String(programValue));
-      await page.waitForLoadState("networkidle");
-      await page.selectOption('select[id="form:j_idt179_input"]', String(yearValue));
-      await page.waitForLoadState("networkidle");
-      const [download] = await Promise.all([
-        page.waitForEvent("download"),
-        page.locator('button:has-text("iCal-vse")').first().click()
-      ]);
-      const path2 = await download.path();
-      if (!path2) throw new Error("No download path");
-      const fs = await import("node:fs/promises");
-      const icsText = await fs.readFile(path2, "utf8");
-      const parsedEvents = await parseIcsToEvents2(icsText);
-      await deleteWiseImportedEvents(userId);
-      const importedEvents = [];
-      for (const ev of parsedEvents) {
-        const validatedData = insertEventSchema.parse({
-          userId,
-          title: ev.title,
-          type: "study",
-          // ali mapiraj po potrebi
-          startTime: new Date(ev.startTime),
-          endTime: new Date(ev.endTime),
-          location: ev.location,
-          description: ev.description,
-          source: "wise"
-        });
-        const created = await storage.createEvent(validatedData);
-        importedEvents.push(created);
+      const userId = String(req.query.userId ?? "");
+      const program = String(req.query.program ?? "");
+      const year = String(req.query.year ?? "");
+      if (!userId) {
+        return res.status(400).json({ message: "Manjka userId" });
       }
-      res.setHeader("X-WISE-ICAL", "1");
-      return res.json({
-        success: true,
-        imported: importedEvents.length
-      });
-    } catch (e) {
-      console.error("\u274C WISE IMPORT ERROR:", e);
-      return res.status(500).json({ message: e?.message ?? String(e) });
-    } finally {
-      await context.close();
-      await browser.close();
-    }
-  });
-  app2.put("/api/events/:id", async (req, res) => {
-    try {
-      const { userId, source, ...updateData } = req.body;
-      const updates = {};
-      if (updateData.title !== void 0) updates.title = updateData.title;
-      if (updateData.type !== void 0) {
-        if (updateData.type !== "study" && updateData.type !== "personal") {
-          return res.status(400).json({ error: "Invalid event type" });
-        }
-        updates.type = updateData.type;
-      }
-      if (updateData.location !== void 0) updates.location = updateData.location;
-      if (updateData.description !== void 0) updates.description = updateData.description;
-      if (updateData.startTime) {
-        const startTime = new Date(updateData.startTime);
-        if (isNaN(startTime.getTime())) {
-          return res.status(400).json({ error: "Invalid startTime format" });
-        }
-        updates.startTime = startTime;
-      }
-      if (updateData.endTime) {
-        const endTime = new Date(updateData.endTime);
-        if (isNaN(endTime.getTime())) {
-          return res.status(400).json({ error: "Invalid endTime format" });
-        }
-        updates.endTime = endTime;
-      }
-      const existingEvent = await storage.getEvent(req.params.id);
-      if (!existingEvent) {
-        return res.status(404).json({ error: "Event not found" });
-      }
-      const finalStartTime = updates.startTime || existingEvent.startTime;
-      const finalEndTime = updates.endTime || existingEvent.endTime;
-      if (finalStartTime >= finalEndTime) {
-        return res.status(400).json({ error: "Event end time must be after start time" });
-      }
-      const event = await storage.updateEvent(req.params.id, updates);
-      res.json(event);
-    } catch (error) {
-      console.error("Error updating event:", error);
-      res.status(500).json({ error: "Failed to update event" });
-    }
-  });
-  app2.delete("/api/events/:id", async (req, res) => {
-    try {
-      const success = await storage.deleteEvent(req.params.id);
-      if (!success) {
-        return res.status(404).json({ error: "Event not found" });
-      }
-      res.status(204).send();
-    } catch (error) {
-      console.error("Error deleting event:", error);
-      res.status(500).json({ error: "Failed to delete event" });
-    }
-  });
-  app2.get("/api/conflicts", async (_req, res) => {
-    try {
-      const events2 = await storage.getEventsByUserId("default-user-id");
+      const rows = await db.select().from(events).where(
+        program && year ? or(
+          eq2(events.ownerUserId, userId),
+          and2(
+            isNull2(events.ownerUserId),
+            eq2(events.program, program),
+            eq2(events.year, year)
+          )
+        ) : eq2(events.ownerUserId, userId)
+      ).orderBy(asc(events.startTime));
       const conflicts = [];
-      for (let i = 0; i < events2.length; i++) {
-        for (let j = i + 1; j < events2.length; j++) {
-          const event1 = events2[i];
-          const event2 = events2[j];
-          if (event1.startTime < event2.endTime && event1.endTime > event2.startTime) {
-            const priority = event1.type === "study" ? event1 : event2;
-            const deprioritized = event1.type === "study" ? event2 : event1;
-            conflicts.push({
-              id: `${event1.id}-${event2.id}`,
-              event1,
-              event2,
-              priority: priority.id,
-              resolution: priority.type === "study" ? "Study event takes priority. Personal event will be skipped." : "Both events have same priority. Manual resolution required."
-            });
-          }
+      const active = [];
+      for (const cur of rows) {
+        for (let i = active.length - 1; i >= 0; i--) {
+          if (active[i].endTime <= cur.startTime) active.splice(i, 1);
         }
-      }
-      res.json(conflicts);
-    } catch (error) {
-      console.error("Error detecting conflicts:", error);
-      res.status(500).json({ error: "Failed to detect conflicts" });
-    }
-  });
-  const uploadLimited = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 },
-    // 5MB
-    fileFilter: (_req, file, cb) => {
-      if (file.mimetype === "text/calendar" || file.originalname.endsWith(".ics")) {
-        cb(null, true);
-      } else {
-        cb(new Error("Only .ics calendar files are allowed"));
-      }
-    }
-  });
-  app2.post("/api/import/ics", uploadLimited.single("file"), async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ error: "No file uploaded" });
-      }
-      const ical = await import("node-ical");
-      const fileContent = req.file.buffer.toString("utf-8");
-      const parsed = ical.parseICS(fileContent);
-      const events2 = [];
-      for (const k in parsed) {
-        const event = parsed[k];
-        if (event.type === "VEVENT") {
-          events2.push({
-            title: event.summary || "Untitled Event",
-            startTime: event.start,
-            endTime: event.end,
-            location: event.location || null,
-            description: event.description || null
+        for (const prev of active) {
+          if (!(prev.startTime < cur.endTime && prev.endTime > cur.startTime)) continue;
+          const a = prev;
+          const b = cur;
+          const aStudy = a.type === "study";
+          const bStudy = b.type === "study";
+          if (aStudy && bStudy) continue;
+          const pairType = aStudy !== bStudy ? "personal-study" : "personal-personal";
+          let manualEvent;
+          let importedEvent;
+          let priorityId = null;
+          let action = "manual";
+          let resolution = "Ro\u010Dna razre\u0161itev je potrebna.";
+          if (pairType === "personal-study") {
+            manualEvent = aStudy ? b : a;
+            importedEvent = aStudy ? a : b;
+            priorityId = importedEvent.id;
+            action = "import";
+            resolution = "Prekrivanje osebnega in \u0161tudijskega dogodka. \u0160tudiijski dogodek ima prednost.";
+          } else {
+            manualEvent = a;
+            importedEvent = b;
+            priorityId = null;
+            action = "manual";
+            resolution = "Prekrivanje dveh osebnih dogodkov. Ro\u010Dna razre\u0161itev je potrebna.";
+          }
+          conflicts.push({
+            id: `${a.id}-${b.id}`,
+            pairType,
+            // "personal-study" | "personal-personal"
+            action,
+            // "import" | "manual"
+            manualEvent,
+            importedEvent,
+            priority: priorityId,
+            resolution
           });
         }
+        active.push(cur);
       }
-      res.json({
-        success: true,
-        eventsFound: events2.length,
-        events: events2
-      });
+      return res.json({ conflicts });
     } catch (error) {
-      console.error("Error parsing ICS file:", error);
-      res.status(500).json({ error: "Failed to parse ICS file" });
-    }
-  });
-  app2.post("/api/notifications/test", async (req, res) => {
-    try {
-      const { email } = req.body;
-      if (!email) {
-        return res.status(400).json({ error: "Email address is required" });
-      }
-      const success = await emailService.sendTestEmail(email);
-      if (success) {
-        res.json({ success: true, message: "Test email sent successfully" });
-      } else {
-        res.status(500).json({ error: "Failed to send test email. Check server logs." });
-      }
-    } catch (error) {
-      console.error("Error sending test email:", error);
-      res.status(500).json({ error: "Failed to send test email" });
-    }
-  });
-  app2.post("/api/notifications/conflict", async (req, res) => {
-    try {
-      const { email, event1Id, event2Id } = req.body;
-      if (!email || !event1Id || !event2Id) {
-        return res.status(400).json({ error: "Email, event1Id, and event2Id are required" });
-      }
-      const event1 = await storage.getEvent(event1Id);
-      const event2 = await storage.getEvent(event2Id);
-      if (!event1 || !event2) {
-        return res.status(404).json({ error: "One or both events not found" });
-      }
-      const success = await emailService.sendConflictNotification({
-        to: email,
-        event1: {
-          title: event1.title,
-          startTime: event1.startTime,
-          endTime: event1.endTime,
-          location: event1.location
-        },
-        event2: {
-          title: event2.title,
-          startTime: event2.startTime,
-          endTime: event2.endTime,
-          location: event2.location
-        }
-      });
-      if (success) {
-        res.json({ success: true, message: "Conflict notification sent" });
-      } else {
-        res.status(500).json({ error: "Failed to send notification" });
-      }
-    } catch (error) {
-      console.error("Error sending conflict notification:", error);
-      res.status(500).json({ error: "Failed to send notification" });
+      console.error("Napaka pri zaznavi konfliktov:", error);
+      return res.status(500).json({ error: "Zaznava konfliktov ni uspela" });
     }
   });
   const createEventRequestSchema = z2.object({
@@ -798,6 +347,7 @@ async function registerRoutes(app2) {
   });
   app2.post("/api/auth/register", async (req, res) => {
     try {
+      console.log("REGISTER HIT", req.headers.origin, req.body);
       const { z: z3 } = await import("zod");
       const body = z3.object({
         username: z3.string().min(1),
@@ -854,32 +404,6 @@ async function registerRoutes(app2) {
       });
     } catch (e) {
       return res.status(400).json({ message: e?.message ?? String(e) });
-    }
-  });
-  app2.post("/api/notifications/digest", async (req, res) => {
-    try {
-      const { email } = req.body;
-      if (!email) {
-        return res.status(400).json({ error: "Email address is required" });
-      }
-      const today = /* @__PURE__ */ new Date();
-      today.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const events2 = await storage.getEventsByUserIdAndDateRange(
-        "default-user-id",
-        today,
-        tomorrow
-      );
-      const success = await emailService.sendDailyDigest(email, events2);
-      if (success) {
-        res.json({ success: true, message: "Daily digest sent", eventCount: events2.length });
-      } else {
-        res.status(500).json({ error: "Failed to send digest" });
-      }
-    } catch (error) {
-      console.error("Error sending daily digest:", error);
-      res.status(500).json({ error: "Failed to send digest" });
     }
   });
   const httpServer = createServer(app2);
@@ -1002,172 +526,155 @@ app.post("/api/import/wise", async (req, res) => {
   const page = await context.newPage();
   const lastReq = [];
   const lastResp = [];
-  page.on(
-    "console",
-    (msg) => console.log("\u{1F7E1} PAGE console:", msg.type(), msg.text())
-  );
+  page.on("console", (msg) => console.log("\u{1F7E1} PAGE console:", msg.type(), msg.text()));
   page.on("pageerror", (err) => console.log("\u{1F534} PAGE error:", err.message));
   page.on("request", (r) => {
-    const entry = { method: r.method(), url: r.url() };
-    lastReq.push(entry);
+    lastReq.push({ method: r.method(), url: r.url() });
     if (lastReq.length > 50) lastReq.shift();
-    console.log("\u27A1\uFE0F REQ:", entry.method, entry.url);
   });
   page.on("response", (r) => {
     const h = r.headers();
-    const entry = {
-      status: r.status(),
-      url: r.url(),
-      ct: h["content-type"],
-      cd: h["content-disposition"]
-    };
+    const entry = { status: r.status(), url: r.url(), ct: h["content-type"], cd: h["content-disposition"] };
     lastResp.push(entry);
     if (lastResp.length > 50) lastResp.shift();
     const ct = (entry.ct ?? "").toLowerCase();
     const cd = (entry.cd ?? "").toLowerCase();
     const url = entry.url.toLowerCase();
-    if (ct.includes("calendar") || cd.includes("attachment") || cd.includes(".ics") || url.includes("dynamiccontent") || url.includes("ical")) {
-      console.log(
-        "\u2B05\uFE0F RESP IMPORTANT:",
-        entry.status,
-        entry.url,
-        "CT=",
-        entry.ct,
-        "CD=",
-        entry.cd
-      );
-    }
   });
-  page.on(
-    "requestfailed",
-    (r) => console.log("\u274C REQ FAILED:", r.url(), r.failure()?.errorText)
-  );
+  page.on("requestfailed", (r) => console.log("\u274C REQ FAILED:", r.url(), r.failure()?.errorText));
+  const dumpSelect = async (css) => {
+    const data = await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return { exists: false };
+      return {
+        exists: true,
+        value: el.value,
+        selectedText: el.selectedOptions[0]?.text ?? null,
+        optionsCount: el.options.length
+      };
+    }, css);
+  };
+  const byId = (id) => page.locator(`[id="${id}"]`);
+  const pickPrimefacesSelectOneMenuByText = async (wrapperId, expectedText) => {
+    const wrapper = byId(wrapperId);
+    await wrapper.waitFor({ state: "visible", timeout: 3e4 });
+    const trigger = wrapper.locator(".ui-selectonemenu-trigger");
+    const panel = byId(`${wrapperId}_panel`);
+    await trigger.click();
+    await panel.waitFor({ state: "visible", timeout: 3e4 });
+    const byDataLabel = panel.locator(`li.ui-selectonemenu-item[data-label="${expectedText}"]`).first();
+    if (await byDataLabel.count()) {
+      await byDataLabel.click();
+    } else {
+      await panel.locator("li.ui-selectonemenu-item").filter({ hasText: expectedText }).first().click();
+    }
+    await page.waitForFunction(
+      ({ id, text: text2 }) => {
+        const el = document.getElementById(id + "_label");
+        return !!el && (el.textContent ?? "").trim() === text2;
+      },
+      { id: wrapperId, text: expectedText },
+      { timeout: 3e4 }
+    );
+    await page.waitForLoadState("networkidle").catch(() => null);
+    await page.waitForTimeout(300);
+  };
   try {
     console.log("\u{1F30D} goto WISE");
     await page.goto("https://wise-tt.com/wtt_um_feri/index.jsp", {
       waitUntil: "domcontentloaded",
       timeout: 6e4
     });
-    console.log("\u2705 page loaded");
-    console.log("\u{1F393} selecting program", programValue);
-    const programSel = page.locator('select[id="form:j_idt175_input"]');
-    await programSel.waitFor({ state: "visible", timeout: 3e4 });
-    await programSel.selectOption(String(programValue));
-    await programSel.dispatchEvent("change");
-    await page.waitForTimeout(700);
-    console.log("\u{1F4C5} selecting year", yearValue);
-    const yearSel = page.locator('select[id="form:j_idt179_input"]');
-    await yearSel.waitFor({ state: "visible", timeout: 3e4 });
-    await yearSel.selectOption(String(yearValue));
-    await yearSel.dispatchEvent("change");
-    await page.waitForTimeout(700);
-    const btn = page.locator('button:has-text("iCal-vse")').first();
-    console.log("\u{1F518} waiting for iCal button");
-    await btn.waitFor({ state: "visible", timeout: 3e4 });
-    console.log("\u{1F5B1}\uFE0F clicking iCal-vse");
+    console.log("\u{1F393} selecting program", program);
+    const programSelectCss = 'select[id="form:j_idt183_input"]';
+    await page.locator(programSelectCss).waitFor({ state: "attached", timeout: 3e4 });
+    let programLabel = program;
+    if (/^\d+$/.test(program)) {
+      programLabel = await page.evaluate(({ sel, val }) => {
+        const el = document.querySelector(sel);
+        if (!el) return val;
+        const opt = Array.from(el.options).find((o) => o.value === val);
+        return opt?.text ?? val;
+      }, { sel: programSelectCss, val: program });
+    }
+    await pickPrimefacesSelectOneMenuByText("form:j_idt183", programLabel);
+    await dumpSelect(programSelectCss);
+    console.log("\u{1F4C5} selecting year (PrimeFaces)", year);
+    const yearSelectCss = 'select[id="form:j_idt187_input"]';
+    await page.locator(yearSelectCss).waitFor({ state: "attached", timeout: 3e4 });
+    await pickPrimefacesSelectOneMenuByText("form:j_idt187", year);
+    await page.waitForFunction(
+      ({ sel, val }) => {
+        const el = document.querySelector(sel);
+        return !!el && el.value === val;
+      },
+      { sel: yearSelectCss, val: year },
+      { timeout: 3e4 }
+    );
+    await dumpSelect(yearSelectCss);
+    const dirSelectCss = 'select[id="form:j_idt191_input"]';
+    await page.waitForFunction(
+      (sel) => {
+        const el = document.querySelector(sel);
+        return !!el && el.options.length >= 2;
+      },
+      dirSelectCss,
+      { timeout: 3e4 }
+    );
+    await dumpSelect(dirSelectCss);
+    await page.waitForTimeout(500);
+    const firstGroup = page.locator('[id="form:groupVar_data"] tr.ui-datatable-selectable').first();
+    if (await firstGroup.count()) {
+      await firstGroup.click().catch(() => null);
+      await page.waitForTimeout(300);
+    }
+    const icalLink = page.locator('a:has(button:has-text("iCal-vse"))').first();
+    const icalBtn = page.locator('button:has-text("iCal-vse")').first();
+    if (await icalLink.count()) await icalLink.waitFor({ state: "visible", timeout: 3e4 });
+    else await icalBtn.waitFor({ state: "visible", timeout: 3e4 });
     const downloadP = page.waitForEvent("download", { timeout: 9e4 }).catch(() => null);
     const attachRespP = page.waitForResponse(
       (r) => {
         const h = r.headers();
-        const ct = (h["content-type"] ?? "").toLowerCase();
-        const cd = (h["content-disposition"] ?? "").toLowerCase();
-        const url = r.url().toLowerCase();
-        return ct.includes("calendar") || cd.includes("attachment") || cd.includes(".ics") || url.includes("ical");
+        return (h["content-type"] ?? "").toLowerCase().includes("calendar") || (h["content-disposition"] ?? "").toLowerCase().includes("attachment") || r.url().toLowerCase().includes("ical");
       },
       { timeout: 9e4 }
     ).catch(() => null);
-    const ajaxHomeP = page.waitForResponse(
-      (r) => r.url().includes("/pages/home.jsf") && r.request().method() === "POST",
-      { timeout: 3e4 }
-    ).catch(() => null);
-    await btn.click();
-    console.log("\u23F3 waiting for download/attachment/ajax...");
+    console.log("\u{1F5B1}\uFE0F clicking iCal-vse");
+    if (await icalLink.count()) await icalLink.click();
+    else await icalBtn.click();
     const download = await downloadP;
     const attachResp = await attachRespP;
     let icsText = null;
     if (download) {
-      console.log("\u2705 GOT DOWNLOAD EVENT:", await download.suggestedFilename());
-      const path2 = await download.path();
-      if (!path2) throw new Error("Download had no path");
+      const p = await download.path();
+      if (!p) throw new Error("Download had no path");
       const fs = await import("node:fs/promises");
-      icsText = await fs.readFile(path2, "utf8");
-    }
-    if (!icsText && attachResp) {
-      console.log(
-        "\u2705 GOT ATTACHMENT RESPONSE:",
-        attachResp.status(),
-        attachResp.url()
-      );
+      icsText = await fs.readFile(p, "utf8");
+    } else if (attachResp) {
       icsText = await attachResp.text();
     }
     if (!icsText) {
-      const ajaxResp = await ajaxHomeP;
-      if (ajaxResp) {
-        const ajaxText = await ajaxResp.text();
-        console.log("\u{1F9E9} AJAX home.jsf preview:", ajaxText.slice(0, 500));
-        const m = ajaxText.match(
-          /(\/wtt_um_feri\/javax\.faces\.resource\/dynamiccontent\.xhtml[^"'<>\s]+)/i
-        ) || ajaxText.match(
-          /(\/javax\.faces\.resource\/dynamiccontent\.xhtml[^"'<>\s]+)/i
-        );
-        if (m?.[1]) {
-          const dynUrl = new URL(m[1], "https://wise-tt.com").toString();
-          console.log("\u{1F3AF} FOUND dynamiccontent:", dynUrl);
-          const r = await context.request.get(dynUrl);
-          const t = await r.text();
-          console.log("\u{1F4C4} dynamiccontent CT:", r.headers()["content-type"]);
-          console.log("\u{1F4C4} dynamiccontent preview:", t.slice(0, 200));
-          icsText = t;
-        } else {
-          console.log("\u2757 No dynamiccontent link found in AJAX response.");
-        }
-      } else {
-        console.log("\u2757 No AJAX /pages/home.jsf response captured (timeout).");
-      }
+      throw new Error("No ICS detected");
     }
-    if (!icsText) {
-      console.log("\u{1F9EF} LAST 20 REQ:", lastReq.slice(-20));
-      console.log("\u{1F9EF} LAST 20 RESP:", lastResp.slice(-20));
-      throw new Error(
-        "No ICS detected (no download event, no attachment response, no dynamiccontent)."
-      );
-    }
-    console.log("\u{1F4C4} ICS length:", icsText.length);
-    console.log("\u{1F4C4} ICS preview:", icsText.slice(0, 250));
     if (!icsText.includes("BEGIN:VCALENDAR")) {
-      console.log("\u{1F4C4} NOT ICS START:", icsText.slice(0, 300));
-      throw new Error("Received content but it's not ICS (missing BEGIN:VCALENDAR)");
+      throw new Error("Downloaded content is not ICS");
     }
     const parsedEvents = await parseIcsToEvents(icsText);
-    console.log("\u{1F4CA} parsed events:", parsedEvents.length);
-    const program2 = String(programValue);
-    const year2 = String(yearValue);
-    const existing = await getWiseScheduleEvents(program2, year2);
-    if (sameEventSet(program2, year2, parsedEvents, existing)) {
+    const existing = await getWiseScheduleEvents(programLabel, year);
+    if (sameEventSet(programLabel, year, parsedEvents, existing)) {
       res.setHeader("X-WISE-ICAL", "1");
-      return res.json({
-        status: "unchanged",
-        message: "Urnik je \u017Ee posodobljen (ni sprememb).",
-        imported: 0,
-        events: existing
-      });
+      return res.json({ status: "unchanged", imported: 0, events: existing });
     }
-    await deleteWiseImportedEventsForSchedule(program2, year2);
-    await insertImportedEventsForSchedule(program2, year2, parsedEvents);
-    const wiseEvents = await getWiseScheduleEvents(program2, year2);
+    await deleteWiseImportedEventsForSchedule(programLabel, year);
+    await insertImportedEventsForSchedule(programLabel, year, parsedEvents);
+    const wiseEvents = await getWiseScheduleEvents(programLabel, year);
     res.setHeader("X-WISE-ICAL", "1");
-    return res.json({
-      status: "updated",
-      message: "Urnik posodobljen.",
-      imported: parsedEvents.length,
-      events: wiseEvents
-    });
+    return res.json({ status: "updated", imported: parsedEvents.length, events: wiseEvents });
   } catch (e) {
-    console.error("\u274C WISE IMPORT ERROR:", e);
-    return res.status(500).json({
-      message: e?.message ?? String(e)
-    });
+    return res.status(500).json({ message: e?.message ?? String(e) });
   } finally {
+    wiseImportLocks.delete(lockKey);
     await context.close();
     await browser.close();
   }
@@ -1176,11 +683,9 @@ async function deleteWiseImportedEventsForSchedule(program, year) {
   await db.delete(events).where(
     and3(
       isNull3(events.ownerUserId),
-      // shared
       eq3(events.program, program),
       eq3(events.year, year),
       eq3(events.source, "imported")
-      // ali "wise" – kar uporabljaš
     )
   );
 }

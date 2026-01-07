@@ -17,7 +17,7 @@ const HOST =
     : getDevHost() || "localhost";
 
 // ⚠️ trenutno imaš hardcoded IP – OK za zdaj
-export const BASE_URL = `http://192.168.0.102:5000`;
+export const BASE_URL = `http://164.8.207.68:5000`; 
 
 async function request<T>(
   path: string,
