@@ -67,7 +67,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="conflicts"
         options={{
-          title: "Conflikti",
+          title: "Konflikti",
           tabBarIcon: ({ color }) => (
             <AntDesign name="exclamation" size={24} color={color} />
           ),

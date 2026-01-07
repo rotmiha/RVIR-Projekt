@@ -60,14 +60,6 @@ app.use((req, _res, next) => {
 
     return events;
   }
-
-
-
-    async function deleteWiseImportedEvents(userId: string) {
-      const all = await storage.getEventsByUserId(userId);
-      const wiseOnes = all.filter((e: any) => e.source === "wise");
-      await Promise.all(wiseOnes.map((e: any) => storage.deleteEvent(e.id)));
-    }
     
 app.get("/api/ping", (_req, res) => {
   console.log("PING HIT /api/ping");
@@ -77,6 +69,7 @@ app.get("/api/ping", (_req, res) => {
 
 
 const wiseImportLocks = new Map<string, boolean>();
+
 
 app.post("/api/import/wise", async (req, res) => {
   console.log("✅ HIT /api/import/wise", req.body);
